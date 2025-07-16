@@ -12,6 +12,8 @@
   MacCMS 视频信息整理工具。
 - **mail-api**
   发送邮件接口，支持多种模板。
+- **mtab-wallpaper**
+  mTab新标签页壁纸获取脚本。
 - **oracle-lookbusy**
   甲骨文云免费机器保活工具，采用智能资源占用策略。
 
