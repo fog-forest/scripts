@@ -14,7 +14,7 @@ BASE_URL = "https://api.codelife.cc/bing/list?lang=cn"
 
 # 设置请求头
 headers = {
-    'origin': 'https://go.itab.link',
+    'Origin': 'https://go.itab.link',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 }
 
@@ -50,13 +50,13 @@ def fetch_wallpapers(page_num, page_size=16):
 
     except requests.exceptions.RequestException as e:
         print(f"网络请求异常: {e}")
-        return None
+        raise  # 直接抛出异常
     except ValueError as e:
         print(f"JSON解析失败: {e}")
-        return None
+        raise  # 直接抛出异常
     except Exception as e:
         print(f"未知异常: {e}")
-        return None
+        raise  # 直接抛出异常
 
 
 def main():
@@ -64,64 +64,89 @@ def main():
     wallpapers = []  # 存储处理后的壁纸数据
     page = 1  # 当前页码
     page_size = 16  # 每页大小
-    max_wallpapers = 800  # 最大壁纸数量
-    consecutive_errors = 0  # 连续错误计数
-    max_errors = 3  # 最大连续错误数
+    max_wallpapers = 960  # 最大壁纸数量
+    processed_urls = set()  # 用于记录已处理的URL
 
-    print(f"开始爬取必应壁纸，目标数量: {max_wallpapers}")
+    print(f"开始爬取必应壁纸，目标数量: {max_wallpapers}  ")
 
-    while True:
-        # 获取当前页数据
-        print(f"\n=== 正在请求第{page}页 ===")
-        wallpaper_list = fetch_wallpapers(page, page_size)
+    try:
+        while True:
+            # 获取当前页数据
+            print(f"\n=== 正在请求第{page}页 ===")
+            wallpaper_list = fetch_wallpapers(page, page_size)
 
-        if wallpaper_list is None:
-            consecutive_errors += 1
-            print(f"第{page}页获取失败，连续错误: {consecutive_errors}/{max_errors}")
+            # 处理壁纸数据
+            processed_count = 0
+            for wallpaper in wallpaper_list:
+                thumb = wallpaper.get("thumb", "")
+                raw = wallpaper.get("raw", "")
 
-            if consecutive_errors >= max_errors:
-                print("达到最大连续错误数，终止爬取")
+                thumb = process_url(thumb)
+                raw = process_url(raw)
+
+                # 去重逻辑：检查raw和thumb是否都未被处理过
+                if thumb and raw and (raw not in processed_urls) and (thumb not in processed_urls):
+                    wallpapers.append({"raw": raw, "thumb": thumb})
+                    processed_urls.add(raw)
+                    processed_urls.add(thumb)
+                    processed_count += 1
+
+                    # 检查是否达到最大数量
+                    if len(wallpapers) >= max_wallpapers:
+                        print(f"已获取{len(wallpapers)}张壁纸，达到最大限制")
+                        break
+
+            print(f"第{page}页: 成功处理 {processed_count}/{len(wallpaper_list)} 条数据")
+            print(f"累计已获取: {len(wallpapers)} 张壁纸")
+
+            # 检查是否需要继续
+            if len(wallpapers) >= max_wallpapers:
                 break
 
             page += 1
-            time.sleep(3)  # 错误后延长等待时间
-            continue
+            time.sleep(1)  # 控制爬取频率
 
-        # 重置连续错误计数
-        consecutive_errors = 0
+    except Exception as e:
+        print(f"发生致命错误，终止爬取: {e}")
 
-        # 检查是否为空页
-        if not wallpaper_list:
-            print(f"第{page}页数据为空，结束爬取")
-            break
+    # 自动增补逻辑：如果去重后数量不足，继续爬取更多页面
+    if len(wallpapers) < max_wallpapers:
+        print(f"去重后壁纸数量不足，需要增补 {max_wallpapers - len(wallpapers)} 张")
 
-        # 处理壁纸数据
-        processed_count = 0
-        for wallpaper in wallpaper_list:
-            thumb = wallpaper.get("thumb", "")
-            raw = wallpaper.get("raw", "")
+        try:
+            while len(wallpapers) < max_wallpapers:
+                print(f"\n=== 正在增补数据，请求第{page}页 ===")
+                wallpaper_list = fetch_wallpapers(page, page_size)
 
-            thumb = process_url(thumb)
-            raw = process_url(raw)
+                processed_count = 0
+                for wallpaper in wallpaper_list:
+                    thumb = wallpaper.get("thumb", "")
+                    raw = wallpaper.get("raw", "")
 
-            if thumb and raw:
-                wallpapers.append({"raw": raw, "thumb": thumb})
-                processed_count += 1
+                    thumb = process_url(thumb)
+                    raw = process_url(raw)
 
-                # 检查是否达到最大数量
+                    if thumb and raw and (raw not in processed_urls) and (thumb not in processed_urls):
+                        wallpapers.append({"raw": raw, "thumb": thumb})
+                        processed_urls.add(raw)
+                        processed_urls.add(thumb)
+                        processed_count += 1
+
+                        if len(wallpapers) >= max_wallpapers:
+                            print(f"已获取{len(wallpapers)}张壁纸，达到最大限制")
+                            break
+
+                print(f"第{page}页: 成功增补 {processed_count}/{len(wallpaper_list)} 条数据")
+                print(f"累计已获取: {len(wallpapers)} 张壁纸")
+
                 if len(wallpapers) >= max_wallpapers:
-                    print(f"已获取{len(wallpapers)}张壁纸，达到最大限制")
                     break
 
-        print(f"第{page}页: 成功处理 {processed_count}/{len(wallpaper_list)} 条数据")
-        print(f"累计已获取: {len(wallpapers)} 张壁纸")
+                page += 1
+                time.sleep(1)
 
-        # 检查是否需要继续
-        if len(wallpapers) >= max_wallpapers:
-            break
-
-        page += 1
-        time.sleep(1)  # 控制爬取频率
+        except Exception as e:
+            print(f"增补过程中发生错误: {e}")
 
     # 生成SQL文件
     if wallpapers:
