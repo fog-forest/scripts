@@ -53,6 +53,81 @@ HTTP_CONFIG = {
     }
 }
 
+# 尝试解码时使用的编码列表
+DECODING_ATTEMPTS = [
+    'utf-8',
+    'gbk',
+    'gb2312',
+    'big5',
+    'iso-8859-1',
+    'windows-1252'
+]
+
+
+# 工具函数
+def is_valid_text(text: str) -> bool:
+    """检查文本是否有效，过滤乱码"""
+    if not text:
+        return False
+
+    # 去除空白字符
+    text = text.strip()
+    if not text:
+        return False
+
+    # 匹配中文字符、英文字母、数字和常见标点
+    valid_chars = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:;!?()（）《》“”‘’\s]', text)
+    valid_ratio = len(valid_chars) / len(text)
+
+    # 有效字符比例低于70%视为乱码
+    return valid_ratio > 0.7
+
+
+def attempt_decode_bytes(byte_data: bytes) -> Tuple[str, str]:
+    """尝试用多种编码解码字节数据，返回最佳结果和使用的编码"""
+    for encoding in DECODING_ATTEMPTS:
+        try:
+            decoded = byte_data.decode(encoding)
+            # 检查解码结果是否有效
+            if is_valid_text(decoded):
+                return decoded, encoding
+        except UnicodeDecodeError:
+            continue
+
+    # 如果所有编码都失败，尝试替换错误字符
+    try:
+        decoded = byte_data.decode('utf-8', errors='replace')
+        return decoded, 'utf-8 (with replacement)'
+    except:
+        return str(byte_data), 'raw bytes'
+
+
+def clean_and_attempt_decode(text: str) -> str:
+    """清理文本并尝试解码可能的乱码"""
+    if not text:
+        return text
+
+    # 尝试处理可能被错误编码的字符串
+    try:
+        # 先尝试将字符串视为UTF-8编码的字节流（处理二次编码问题）
+        byte_data = text.encode('latin-1')
+        decoded, encoding = attempt_decode_bytes(byte_data)
+
+        # 如果解码成功且有效字符比例提高，使用解码结果
+        if encoding != 'raw bytes' and is_valid_text(decoded):
+            # 比较解码前后的有效字符比例
+            original_ratio = len(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:;!?()（）《》“”‘’\s]', text)) / len(text)
+            decoded_ratio = len(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:;!?()（）《》“”‘’\s]', decoded)) / len(decoded)
+
+            if decoded_ratio > original_ratio + 0.1:  # 解码后有效字符比例显著提高
+                logger.debug(f"成功解码乱码，使用编码: {encoding}")
+                return decoded
+    except Exception as e:
+        logger.debug(f"解码尝试失败: {e}")
+        pass
+
+    return text
+
 
 # 日志配置
 def setup_logger():
@@ -328,28 +403,36 @@ def clean_description(url: str, original_desc: str = "") -> Optional[str]:
     # 尝试从API获取描述
     api_desc = fetch_website_description_sync(url)
     if api_desc:
-        cleaned_api_desc = clean_api_description(api_desc)
+        # 先尝试解码可能的乱码
+        decoded_api_desc = clean_and_attempt_decode(api_desc)
+        cleaned_api_desc = clean_api_description(decoded_api_desc)
         if cleaned_api_desc:
             return cleaned_api_desc
 
-    # 检查原始描述是否有效
-    if not is_description_invalid(original_desc):
-        return original_desc.strip().replace('\n', '').replace('\r', '')
+    # 检查原始描述是否有效，先尝试解码
+    decoded_original_desc = clean_and_attempt_decode(original_desc)
+    if not is_description_invalid(decoded_original_desc):
+        return decoded_original_desc.strip().replace('\n', '').replace('\r', '')
 
     logger.warning(f"无法为URL获取有效描述: {url}")
     return None
 
 
 def is_description_invalid(desc: str) -> bool:
-    """检查描述是否无效（空值、默认值或包含非ASCII字符）"""
+    """检查描述是否无效（空值、默认值或无效文本）"""
     if not desc:
         return True
+
     desc = desc.strip().lower()
-    if desc in ['none', '暂无描述']:
+
+    # 检查默认无效值
+    if desc in ['none', '暂无描述', '无描述', 'null']:
         return True
-    # 检查是否包含非ASCII字符
-    if re.search(r'[^\x00-\x7F]{1,}', desc):
+
+    # 结合is_valid_text函数检查文本有效性（过滤乱码）
+    if not is_valid_text(desc):
         return True
+
     return False
 
 
@@ -368,9 +451,9 @@ def clean_api_description(desc: str) -> Optional[str]:
     return desc if desc else None
 
 
-# API请求函数
+# API请求函数 - 增强版，支持对响应内容进行解码尝试
 async def fetch_api(session, api_url, api):
-    """异步请求单个API获取网站描述"""
+    """异步请求单个API获取网站描述，增加乱码处理"""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -379,15 +462,30 @@ async def fetch_api(session, api_url, api):
 
             async with session.get(api_url, timeout=timeout) as response:
                 response.raise_for_status()
-                data = await response.json()
+
+                # 先获取原始字节数据，以便进行编码检测
+                byte_data = await response.read()
+
+                # 尝试解码字节数据
+                decoded_data, encoding = attempt_decode_bytes(byte_data)
+
+                # 尝试将解码后的字符串转换为JSON
+                try:
+                    import json
+                    data = json.loads(decoded_data)
+                except json.JSONDecodeError:
+                    # 如果解码后的字符串无法解析为JSON，尝试使用默认解码
+                    data = await response.json()
+
                 website_desc = api['parse_func'](data)
                 return api['name'], website_desc
 
         except asyncio.TimeoutError:
             if attempt == max_retries - 1:
                 return api['name'], None
-        except Exception:
+        except Exception as e:
             if attempt == max_retries - 1:
+                logger.debug(f"API请求失败: {str(e)}")
                 return api['name'], None
 
     return api['name'], None
@@ -408,21 +506,29 @@ async def fetch_website_description(url: str) -> Optional[str]:
         {
             "name": "shanhe",
             "url_template": "https://shanhe.kim/api/wz/web_tdk.php?url={}",
-            "parse_func": lambda data: data.get('description', '') if data.get('code') == 1 else ''
+            "parse_func": lambda data:
+            desc if (desc := data.get('description', ''))
+                    and data.get('code') == 1
+                    and is_valid_text(desc)
+            else ''
         },
         {
             "name": "suol",
             "url_template": "https://api.suol.cc/v1/zs_wzxx.php?url={}",
-            "parse_func": lambda data: data.get('description', '') if data.get('code') == 1 else ''
+            "parse_func": lambda data:
+            desc if (desc := data.get('description', ''))
+                    and data.get('code') == 1
+                    and is_valid_text(desc)
+            else ''
         },
         {
             "name": "ahfi",
             "url_template": "https://api.ahfi.cn/api/websiteinfo?url={}",
             "parse_func": lambda data:
-            # 提取描述并验证是否有效
             desc if (desc := data.get('data', {}).get('description', ''))
                     and desc.strip()
                     and desc not in invalid_descriptions
+                    and is_valid_text(desc)
             else ''
         },
         {
@@ -432,12 +538,16 @@ async def fetch_website_description(url: str) -> Optional[str]:
             desc if (desc := data.get('data', {}).get('description', ''))
                     and desc.strip()
                     and desc not in invalid_descriptions
+                    and is_valid_text(desc)
             else ''
         },
         {
             "name": "xxapi",
             "url_template": "https://v2.xxapi.cn/api/title?url={}",
-            "parse_func": lambda data: data.get('data', '')
+            "parse_func": lambda data:
+            desc if (desc := data.get('data', ''))
+                    and is_valid_text(desc)
+            else ''
         }
     ]
 
@@ -477,7 +587,8 @@ def fetch_website_description_sync(url: str) -> Optional[str]:
             return result
         else:
             return loop.run_until_complete(fetch_website_description(url))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"同步获取描述失败: {e}")
         return None
 
 
@@ -503,7 +614,15 @@ def process_category(category: str, processed_normalized_urls: Set[str],
                 timeout=HTTP_CONFIG['timeout']
             )
             response.raise_for_status()
-            data = response.json()
+
+            # 对API响应进行编码检测和处理
+            byte_data = response.content
+            decoded_content, encoding = attempt_decode_bytes(byte_data)
+            if encoding != 'utf-8':
+                logger.debug(f"API响应使用编码 {encoding}，已自动转换")
+
+            import json
+            data = json.loads(decoded_content)
 
             # 如果没有数据，说明处理完成
             if not data.get('data', []):
