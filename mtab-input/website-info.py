@@ -1,17 +1,67 @@
 #!/usr/bin/python3
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
-# @Date  : 2025/07/18
-# @Desc  : mTab多分类网站书签导出工具，整合了完善的URL跳转解析逻辑
+# @Date  : 2025/07/20
+# @Desc  : mTab多分类网站书签导出工具
+
+
+# ============================== 配置参数区 ==============================
+# 请在此处修改配置参数
+
+# 线程数量配置
+MAX_WORKERS = 5  # 并发处理的线程数量
+
+# 需要处理的分类列表
+CATEGORIES = ["ai"]  # 可添加更多分类，如["ai", "tech", "news", "music"]
+
+# 分类ID映射表，用于SQL生成
+CATEGORY_IDS = {
+    "ai": 1, "app": 2, "news": 3, "music": 4,
+    "tech": 5, "photos": 6, "life": 7, "education": 8,
+    "entertainment": 9, "shopping": 10, "social": 11, "read": 12,
+    "sports": 13, "finance": 14, "others": 15
+}
+
+# 需要过滤的域名列表，包含这些域名的URL将被直接丢弃
+BLOCKED_DOMAINS = {
+    # 示例域名，可根据需要修改
+    "trae.ai",
+    "trae.cn"
+}
+
+# HTTP请求配置
+HTTP_CONFIG = {
+    'timeout': 20,  # 请求超时时间(秒)
+    'max_redirects': 10,  # 最大跳转次数
+    'headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+        'Connection': 'keep-alive'
+    }
+}
+
+# 图标存储目录
+ICON_DIRECTORY = 'icons'
+
+# SQL输出文件路径
+SQL_OUTPUT_FILE = "mtab_import.sql"
+
+# ========================================================================
+
+
+# 导入依赖库
 import asyncio
 import io
 import logging
 import os
 import random
 import re
+import threading
 import time
 from base64 import b64encode
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List, Dict, Set, Tuple, Optional
 from urllib.parse import urljoin, quote, urlparse
@@ -47,33 +97,6 @@ class WebsiteData:
     background_color: str
 
 
-# 配置常量
-# 分类ID映射表，用于SQL生成
-CATEGORY_IDS = {
-    "ai": 1, "app": 2, "news": 3, "music": 4,
-    "tech": 5, "photos": 6, "life": 7, "education": 8,
-    "entertainment": 9, "shopping": 10, "social": 11, "read": 12,
-    "sports": 13, "finance": 14, "others": 15
-}
-
-# 需要过滤的域名列表，包含这些域名的URL将被直接丢弃
-BLOCKED_DOMAINS = {
-    # 示例域名，可根据需要修改
-    "trae.cn"
-}
-
-# HTTP请求配置
-HTTP_CONFIG = {
-    'timeout': 20,
-    'max_redirects': 10,
-    'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-        'Connection': 'keep-alive'
-    }
-}
-
 # 跳转模式正则表达式
 JS_REDIRECT_PATTERNS = [
     r"location\s*=\s*[\"'](.*?)[\"']",
@@ -104,8 +127,8 @@ def setup_logger() -> logging.Logger:
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
 
-    # 日志格式：时间 - 级别 - 消息
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # 日志格式：时间 - 级别 - 线程ID - 消息
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - 线程%(thread)d - %(message)s')
     ch.setFormatter(formatter)
 
     # 清除现有处理器并添加新处理器
@@ -644,7 +667,7 @@ async def fetch_website_description(url: str) -> Optional[str]:
 
 
 def fetch_website_description_sync(url: str) -> Optional[str]:
-    """同步调用异步函数获取网站描述
+    """同步调用异步函数获取网站描述，修复多线程问题
 
     参数:
         url: 网站URL
@@ -653,17 +676,15 @@ def fetch_website_description_sync(url: str) -> Optional[str]:
         Optional[str]: 有效的网站描述，若获取失败则返回None
     """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            result = new_loop.run_until_complete(fetch_website_description(url))
-            new_loop.close()
-            return result
-        else:
-            return loop.run_until_complete(fetch_website_description(url))
+        # 为每个线程创建独立的事件循环，解决多线程问题
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(fetch_website_description(url))
+        loop.close()  # 确保循环关闭，释放资源
+        return result
     except Exception as e:
-        logger.debug(f"同步获取描述失败: {e}")
+        # 提高日志级别，便于调试多线程问题
+        logger.error(f"获取网站描述失败: {str(e)}，URL: {url}")
         return None
 
 
@@ -785,7 +806,7 @@ def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
         )
         img_response.raise_for_status()
 
-        file_path = os.path.join('icons', filename)
+        file_path = os.path.join(ICON_DIRECTORY, filename)
 
         # 处理SVG文件
         if img_src.lower().endswith('.svg'):
@@ -845,7 +866,8 @@ def save_file(content: str, file_path: str) -> None:
 def generate_filename(
         url: str,
         processed_domains: Dict[str, Dict[str, str]],
-        processed_data: List[WebsiteData]
+        processed_data: List[WebsiteData],
+        lock: threading.Lock  # 添加锁参数确保线程安全
 ) -> Tuple[str, Optional[str]]:
     """生成唯一的文件名，处理可能的域名冲突
 
@@ -853,6 +875,7 @@ def generate_filename(
         url: 网站URL
         processed_domains: 已处理的域名信息字典
         processed_data: 已处理的网站数据列表
+        lock: 线程锁，确保数据操作安全
 
     返回:
         Tuple[str, Optional[str]]: 生成的文件名和冲突处理消息
@@ -865,39 +888,41 @@ def generate_filename(
     base_filename = f"{main_domain}.svg"
     suffix_filename = f"{main_domain}-{suffix}.svg"
 
-    # 如果域名未处理过，直接使用基础文件名
-    if main_domain not in processed_domains:
-        return base_filename, None
+    # 使用锁确保对共享数据的操作安全
+    with lock:
+        # 如果域名未处理过，直接使用基础文件名
+        if main_domain not in processed_domains:
+            return base_filename, None
 
-    # 处理域名冲突
-    existing_info = processed_domains[main_domain]
-    existing_suffix = existing_info['suffix']
-    existing_filename = existing_info['filename']
-    existing_file_path = os.path.join('icons', existing_filename)
+        # 处理域名冲突
+        existing_info = processed_domains[main_domain]
+        existing_suffix = existing_info['suffix']
+        existing_filename = existing_info['filename']
+        existing_file_path = os.path.join(ICON_DIRECTORY, existing_filename)
 
-    # 后缀相同，无需处理
-    if existing_suffix == suffix:
-        return base_filename, None
+        # 后缀相同，无需处理
+        if existing_suffix == suffix:
+            return base_filename, None
 
-    # 重命名已存在的文件
-    new_existing_filename = f"{main_domain}-{existing_suffix}.svg"
+        # 重命名已存在的文件
+        new_existing_filename = f"{main_domain}-{existing_suffix}.svg"
 
-    try:
-        os.rename(existing_file_path, os.path.join('icons', new_existing_filename))
-    except Exception as e:
-        logger.error(
-            f"文件重命名失败: {existing_filename} → {new_existing_filename}, 错误: {e}"
-        )
-        return suffix_filename, "文件重命名失败"
+        try:
+            os.rename(existing_file_path, os.path.join(ICON_DIRECTORY, new_existing_filename))
+        except Exception as e:
+            logger.error(
+                f"文件重命名失败: {existing_filename} → {new_existing_filename}, 错误: {e}"
+            )
+            return suffix_filename, "文件重命名失败"
 
-    # 更新已处理数据中的文件名
-    for item in processed_data:
-        if item.local_filename == existing_filename:
-            item.local_filename = new_existing_filename
-            break
+        # 更新已处理数据中的文件名
+        for item in processed_data:
+            if item.local_filename == existing_filename:
+                item.local_filename = new_existing_filename
+                break
 
-    # 更新已处理域名信息
-    processed_domains[main_domain]['filename'] = new_existing_filename
+        # 更新已处理域名信息
+        processed_domains[main_domain]['filename'] = new_existing_filename
 
     return suffix_filename, "添加后缀区分"
 
@@ -931,7 +956,8 @@ def process_category(
         category: str,
         processed_normalized_urls: Set[str],
         processed_domains: Dict[str, Dict[str, str]],
-        processed_data: List[WebsiteData]
+        processed_data: List[WebsiteData],
+        lock: threading.Lock  # 添加锁参数确保线程安全
 ) -> None:
     """处理单个分类，获取并处理该分类下的所有网站数据
 
@@ -940,6 +966,7 @@ def process_category(
         processed_normalized_urls: 已处理的标准化URL集合（用于去重）
         processed_domains: 已处理的域名信息字典
         processed_data: 已处理的网站数据列表
+        lock: 线程锁，确保数据操作安全
     """
     logger.info(f"开始处理分类: {category}")
     base_url = 'https://api.codelife.cc/website/list'
@@ -982,10 +1009,12 @@ def process_category(
                     logger.warning(f"无法标准化URL: {final_url}")
                     continue
 
-                # 检查是否已处理（基于标准化URL去重）
-                if normalized_url in processed_normalized_urls:
-                    logger.debug(f"发现重复URL（标准化后）: {final_url}")
-                    continue
+                # 使用锁确保对共享集合的操作安全
+                with lock:
+                    # 检查是否已处理（基于标准化URL去重）
+                    if normalized_url in processed_normalized_urls:
+                        logger.debug(f"发现重复URL（标准化后）: {final_url}")
+                        continue
 
                 # 获取清理后的描述
                 clean_desc = clean_description(final_url, original_description)
@@ -996,7 +1025,7 @@ def process_category(
                 expanded_color = expand_color_format(background_color)
 
                 # 生成文件名
-                filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data)
+                filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data, lock)
 
                 # 下载并保存图片
                 success, status = download_and_save_image(img_src, filename)
@@ -1004,22 +1033,24 @@ def process_category(
                     logger.warning(f"图片处理失败: {img_src}, 状态: {status}")
                     continue
 
-                # 更新处理记录（使用标准化URL）
-                processed_normalized_urls.add(normalized_url)
-                domain = extract(final_url.rstrip('/'))
-                processed_domains[domain.domain] = {
-                    'suffix': domain.suffix,
-                    'filename': filename
-                }
-                processed_data.append(WebsiteData(
-                    name=item.get('name', ''),
-                    url=final_url,
-                    description=clean_desc,
-                    img_src=img_src,
-                    local_filename=filename,
-                    category=category,
-                    background_color=expanded_color
-                ))
+                # 使用锁确保对共享数据结构的操作安全
+                with lock:
+                    # 更新处理记录（使用标准化URL）
+                    processed_normalized_urls.add(normalized_url)
+                    domain = extract(final_url.rstrip('/'))
+                    processed_domains[domain.domain] = {
+                        'suffix': domain.suffix,
+                        'filename': filename
+                    }
+                    processed_data.append(WebsiteData(
+                        name=item.get('name', ''),
+                        url=final_url,
+                        description=clean_desc,
+                        img_src=img_src,
+                        local_filename=filename,
+                        category=category,
+                        background_color=expanded_color
+                    ))
 
             # 处理下一页
             page += 1
@@ -1071,13 +1102,15 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
         category_id = CATEGORY_IDS.get(site.category, 15)
 
         # 构建SQL语句
-        sql = f"""INSERT INTO `mtab`.`linkstore` 
-(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, 
-`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) 
-VALUES 
-('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{site.url}', 
-'icon', '1x1', '2025-01-01 00:00:00', 0, {category_id}, '{escaped_description}', '{domain}', 
-0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"""
+        sql = (
+            f"INSERT INTO `mtab`.`linkstore` "
+            f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
+            f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
+            f"VALUES "
+            f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{site.url}', "
+            f"'icon', '1x1', '2025-01-01 00:00:00', 0, {category_id}, '{escaped_description}', '{domain}', "
+            f"0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"
+        )
 
         sql_statements.append(sql)
 
@@ -1090,16 +1123,14 @@ def main() -> None:
     logger.info("开始执行mTab多分类网站书签导出工具")
     logger.info("=" * 50)
 
-    # 输出当前过滤的域名列表
-    logger.info(f"当前过滤的域名列表: {', '.join(BLOCKED_DOMAINS)}")
+    # 输出当前配置信息
+    logger.info(f"线程数量: {MAX_WORKERS}")
+    logger.info(f"处理分类: {', '.join(CATEGORIES)}")
+    logger.info(f"过滤的域名列表: {', '.join(BLOCKED_DOMAINS)}")
 
     # 准备工作：清空图标目录
-    clear_directory('icons')
-    logger.info("已清空icons目录，准备存储新图标")
-
-    # 配置要处理的分类
-    categories = ["ai"]  # 可以添加更多分类，如["ai", "tech", "news"]
-    logger.info(f"准备处理分类: {', '.join(categories)}")
+    clear_directory(ICON_DIRECTORY)
+    logger.info(f"已清空{ICON_DIRECTORY}目录，准备存储新图标")
 
     # 初始化数据存储结构
     processed_data: List[WebsiteData] = []
@@ -1107,9 +1138,30 @@ def main() -> None:
     processed_normalized_urls: Set[str] = set()
     processed_domains: Dict[str, Dict[str, str]] = {}  # 用于处理域名冲突
 
-    # 处理所有分类
-    for category in tqdm(categories, desc="处理分类", unit="分类"):
-        process_category(category, processed_normalized_urls, processed_domains, processed_data)
+    # 创建线程锁，确保多线程安全访问共享数据
+    lock = threading.Lock()
+
+    # 使用配置的线程数量并行处理分类
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # 提交所有分类处理任务
+        futures = [
+            executor.submit(
+                process_category,
+                category,
+                processed_normalized_urls,
+                processed_domains,
+                processed_data,
+                lock
+            )
+            for category in CATEGORIES
+        ]
+
+        # 等待所有任务完成并处理异常
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"分类处理线程出错: {e}")
 
     # 处理结果统计和输出
     logger.info("\n" + "=" * 50)
@@ -1130,10 +1182,9 @@ def main() -> None:
 
         # 生成SQL文件
         sql_content = generate_sql_statements(processed_data)
-        sql_file_path = "mtab_import.sql"
-        save_file(sql_content, sql_file_path)
+        save_file(sql_content, SQL_OUTPUT_FILE)
 
-        print(f"\nSQL导入文件已生成: {sql_file_path}")
+        print(f"\nSQL导入文件已生成: {SQL_OUTPUT_FILE}")
         print(f"包含 {len(sql_content.split('INSERT')) - 1} 条INSERT语句")
     else:
         logger.warning("未处理任何数据")
