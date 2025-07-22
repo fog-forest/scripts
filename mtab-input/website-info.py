@@ -8,7 +8,7 @@
 
 # ============================== 配置参数区 ==============================
 # 线程数量配置
-MAX_WORKERS = 8  # 并发处理URL的线程数量
+MAX_WORKERS = 50  # 并发处理URL的线程数量
 
 # 需要处理的分类列表
 CATEGORIES = [
@@ -196,6 +196,10 @@ def main() -> None:
         pbar = tqdm(total=len(url_queue), desc="处理URL进度")
 
         def process_with_progress(item, category):
+            # 处理名称中的'-'截断
+            if 'name' in item and '-' in item['name']:
+                item['name'] = item['name'].split('-', 1)[0]  # 只截断第一个'-'
+
             # 将重试参数传递给处理函数
             process_url(
                 item,
@@ -334,6 +338,7 @@ def is_url_acceptable(url: str) -> Tuple[bool, str]:
 
 # ============================== 文本验证与处理函数 ==============================
 def is_valid_text(text: str) -> bool:
+    """检查文本是否有效（不是乱码）"""
     if not text:
         return False
 
@@ -341,53 +346,184 @@ def is_valid_text(text: str) -> bool:
     if not text:
         return False
 
+    # 移除控制字符
     text_clean = re.sub(r'[\x00-\x1F\x7F]', '', text)
 
+    # 定义有效字符集（中文、英文、数字、常见标点）
     valid_chars = re.findall(
         r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:!?()（）《》“”‘’\s]',
         text_clean
     )
 
+    # 有效字符占比需超过70%
     valid_ratio = len(valid_chars) / len(text_clean) if len(text_clean) > 0 else 0
     return valid_ratio > 0.7
 
 
-def is_description_invalid(desc: str) -> bool:
+def has_chinese_text(text: str) -> bool:
+    """检查文本是否包含中文"""
+    return bool(re.search(r'[\u4e00-\u9fa5]', text))
+
+
+def is_pure_chinese(text: str) -> bool:
+    """检查文本是否为纯中文（可以包含英文标点和数字）"""
+    # 移除所有非中文字符后检查是否还有内容
+    chinese_only = re.sub(r'[^\u4e00-\u9fa5]', '', text)
+    return len(chinese_only) > 0 and not re.search(r'[a-zA-Z]', text)
+
+
+def is_pure_english(text: str) -> bool:
+    """检查文本是否为纯英文（不包含任何中文字符）"""
+    return not bool(re.search(r'[\u4e00-\u9fa5]', text))
+
+
+def clean_html_entities(text: str) -> str:
+    """清理HTML实体编码，保留单引号转换"""
+    # 替换单引号实体
+    text = text.replace('&#x27;', "'")
+    # 移除其他所有HTML实体
+    text = re.sub(r'&#x[0-9a-fA-F]+;', '', text)
+    return text
+
+
+def is_domain_like(text: str) -> bool:
+    """检查文本是否类似域名格式（包含点且点前后有字母）"""
+    # 简单的域名格式检测：包含至少一个点，点前后有字母
+    return bool(re.search(r'[a-zA-Z0-9]+\.[a-zA-Z0-9]+', text))
+
+
+def is_description_valid(desc: str) -> bool:
+    """检查描述是否有效：存在、是中文、不是乱码、不是无效值"""
     if not desc:
-        return True
+        return False
 
-    desc = desc.strip().lower()
+    desc_clean = desc.strip()
+    if not desc_clean:
+        return False
 
-    if desc in ['none', '暂无描述', '无描述', 'null']:
-        return True
+    # 检查是否为无效值
+    lower_desc = desc_clean.lower()
+    if lower_desc in ['none', '暂无描述', '无描述', 'null', '暂无藐视']:
+        return False
 
-    return not is_valid_text(desc)
+    # 检查是否包含中文且不是乱码
+    return has_chinese_text(desc_clean) and is_valid_text(desc_clean)
 
 
-def clean_api_description(desc: str) -> Optional[str]:
-    desc = desc.strip().replace('\n', '').replace('\r', '')
-    if not desc:
-        return None
+def truncate_description(desc: str) -> str:
+    """
+    根据文本类型进行智能截断：
+    - 纯中文：取冒号“：”之前的内容，遇到“！”截断并不保留“！”
+    - 纯英文：取分号“;”之前的内容，遇到“!”截断并不保留“!”
+    - 中英文混合：优先按中文标点截断
+    """
+    # 先处理特殊符号
+    desc = clean_html_entities(desc)
 
-    has_chinese = re.search(r'[\u4e00-\u9fa5]', desc)
-    if has_chinese:
+    # 检查是否包含感叹号并截断（不保留感叹号）
+    if '!' in desc:
+        desc = desc.split('!', 1)[0].strip()
+    if '！' in desc:
+        desc = desc.split('！', 1)[0].strip()
+
+    # 纯中文处理
+    if is_pure_chinese(desc):
+        if '：' in desc:
+            return desc.split('：', 1)[0].strip()
+        # 备选截断符
+        for char in ['。', '；', '?', '？']:
+            if char in desc:
+                return desc.split(char, 1)[0].strip()
+        return desc.strip()
+
+    # 纯英文处理
+    if is_pure_english(desc):
+        if ';' in desc:
+            return desc.split(';', 1)[0].strip()
+        # 备选截断符
+        for char in ['.', '?']:
+            if char in desc:
+                return desc.split(char, 1)[0].strip()
+        return desc.strip()
+
+    # 中英文混合处理（按中文规则）
+    if '：' in desc:
+        return desc.split('：', 1)[0].strip()
+    if '。' in desc:
+        return desc.split('。', 1)[0].strip()
+    if ';' in desc:
+        return desc.split(';', 1)[0].strip()
+
+    return desc.strip()
+
+
+def normalize_punctuation(desc: str) -> str:
+    """根据文本是否包含中文统一标点符号，避免转换域名中的点"""
+    # 检查文本中是否包含类似域名的结构
+    contains_domain = is_domain_like(desc)
+
+    if has_chinese_text(desc):
+        # 有中文，使用中文标点
         punctuation_map = {
-            '.': '。', ',': '，', ';': '；', ':': '：',
+            ',': '，', ';': '；', ':': '：',
             '!': '！', '?': '？', '(': '（', ')': '）',
             '<': '《', '>': '》', '"': '“', "'": '‘'
         }
-        for en_punc, zh_punc in punctuation_map.items():
-            desc = desc.replace(en_punc, zh_punc)
 
-    for punct in ['。', '.']:
-        if punct in desc:
-            parts = desc.split(punct, 1)
-            if parts[0].strip():
-                return f"{parts[0].strip()}{punct}"
-            else:
-                return clean_api_description(parts[1]) if len(parts) > 1 else desc
+        # 如果包含域名结构，不转换英文点；否则正常转换
+        if not contains_domain:
+            punctuation_map['.'] = '。'
+    else:
+        # 纯英文，使用英文标点
+        punctuation_map = {
+            '。': '.', '，': ',', '；': ';', '：': ':',
+            '！': '!', '？': '?', '（': '(', '）': ')',
+            '《': '<', '》': '>', '“': '"', '‘': "'"
+        }
+
+    for old, new in punctuation_map.items():
+        desc = desc.replace(old, new)
 
     return desc
+
+
+def normalize_description(desc: str) -> str:
+    """规范化描述内容：处理特殊字符、替换符号、调整空格和标点"""
+    # 1. 删除*和&amp;
+    desc = re.sub(r'[*]|&amp;', '', desc)
+
+    # 2. 替换竖线为逗号
+    desc = desc.replace('|', '，')
+
+    # 3. 把-和_替换成，
+    desc = re.sub(r'[-_]', '，', desc)
+
+    # 4. 清理逗号前后的空格
+    desc = re.sub(r'\s*，\s*', '，', desc)
+
+    # 5. 去除多余空格（连续空格转为单个）
+    desc = re.sub(r'\s+', ' ', desc).strip()
+
+    # 6. 中英文混杂时，英文/数字左右添加空格
+    # 匹配中文后面跟英文/数字的情况
+    desc = re.sub(r'([\u4e00-\u9fa5])([a-zA-Z0-9.])', r'\1 \2', desc)
+    # 匹配英文/数字后面跟中文的情况
+    desc = re.sub(r'([a-zA-Z0-9.])([\u4e00-\u9fa5])', r'\1 \2', desc)
+
+    # 7. 统一标点符号
+    desc = normalize_punctuation(desc)
+
+    return desc
+
+
+def process_description(desc: str) -> str:
+    """处理描述的完整流程：清理实体 -> 截断 -> 规范化"""
+    # 1. 清理HTML实体
+    cleaned = clean_html_entities(desc)
+    # 2. 按规则截断（包含!和！的处理）
+    truncated = truncate_description(cleaned)
+    # 3. 规范化格式
+    return normalize_description(truncated)
 
 
 # ============================== URL处理函数 ==============================
@@ -457,7 +593,7 @@ def fetch_website_description(url: str) -> Optional[str]:
         return None
 
     invalid_descriptions = {
-        "未找到描述", "null"
+        "未找到描述", "null", "暂无描述", "无描述", "暂无藐视"
     }
 
     api_list = [
@@ -532,39 +668,54 @@ def fetch_website_description(url: str) -> Optional[str]:
         }
     ]
 
+    # 优先选择包含中文的API结果
+    chinese_results = []
+    other_results = []
+
     for api in api_list:
         try:
             website_desc = fetch_api(api, url)
             if website_desc:
                 website_desc = website_desc.strip().replace('\n', ' ').replace('\r', ' ')
                 if website_desc:
-                    return website_desc
+                    if has_chinese_text(website_desc):
+                        chinese_results.append(website_desc)
+                    else:
+                        other_results.append(website_desc)
         except Exception as e:
             continue
+
+    # 优先返回中文结果，没有则返回其他结果
+    if chinese_results:
+        return chinese_results[0]
+    elif other_results:
+        return other_results[0]
 
     return None
 
 
 def clean_description(url: str, original_desc: str = "") -> Optional[str]:
-    # 优先使用API获取描述
+    # 1. 优先检查并使用原始描述
+    if is_description_valid(original_desc):
+        processed = process_description(original_desc)
+        if processed:
+            return processed
+
+    # 2. 原始描述无效，尝试API获取
     api_desc = fetch_website_description(url)
     if api_desc:
-        cleaned_api_desc = clean_api_description(api_desc)
-        if cleaned_api_desc:
-            return cleaned_api_desc
+        processed = process_description(api_desc)
+        if processed:
+            return processed
 
-    # API获取失败，检查URL是否在白名单或使用允许的子域名
+    # 3. 检查URL是否在白名单或使用允许的子域名
     is_acceptable, _ = is_url_acceptable(url)
     if not is_acceptable:
-        logger.warning(f"API获取描述失败且URL不在白名单/允许的子域名中，丢弃URL: {url}")
+        logger.warning(f"描述获取失败且URL不在白名单/允许的子域名中，丢弃URL: {url}")
         return None
 
-    # 在白名单或允许的子域名中，检查原始描述是否有效
-    if not is_description_invalid(original_desc):
-        return clean_api_description(original_desc)
-
-    # 白名单或允许的子域名但无有效原始描述
-    logger.warning(f"API获取描述失败且无有效原始描述，丢弃URL: {url}")
+    # 4. 白名单但无有效描述
+    logger.warning(f"原始描述无效且API获取描述失败，丢弃URL: {url}")
     return None
 
 
@@ -931,10 +1082,16 @@ def process_category(category, url_queue, lock):
 
 
 def generate_sql_statements(websites: List[WebsiteData]) -> str:
+    # 先按area(分类ID)升序，再按name升序排序
+    sorted_websites = sorted(
+        websites,
+        key=lambda x: (CATEGORY_IDS.get(x.category, 15), x.name)
+    )
+
     sql_statements = []
     seen_normalized_urls = set()
 
-    for site in websites:
+    for site in sorted_websites:
         normalized = normalize_url(site.url)
 
         if normalized in seen_normalized_urls:
