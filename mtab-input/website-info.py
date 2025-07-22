@@ -51,8 +51,8 @@ ALLOWED_SUBDOMAINS = {
     # 通信与联系类
     "mail", "email", "contact", "msg", "notify",
     # 资源存储与分发类
-    "cdn", "img", "pic", "image", "file", "idc"
-                                          "pan", "drive", "store", "archive", "photo",
+    "cdn", "img", "pic", "image", "file", "idc",
+    "pan", "drive", "store", "archive", "photo",
     "yun",
     # 设备与平台类
     "pc", "mobile", "m", "ios", "android",
