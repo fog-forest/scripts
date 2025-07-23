@@ -8,11 +8,11 @@
 
 # ============================== 公共配置参数区 ==============================
 # 线程数量配置
-MAX_WORKERS = 50  # 并发处理URL的线程数量
+MAX_WORKERS = 40  # 并发处理URL的线程数量
 
 # AI模型配置
 AI_CONFIG = {
-    "api_key": "AI_API_KEY",
+    "api_key_env_var": "AI_API_KEY",
     "base_url": "https://www.gptapi.us/v1",
     "model": "gpt-4o-mini",
     "temperature": 0.7,
@@ -35,7 +35,7 @@ CATEGORY_IDS = {
 
 # 域名过滤配置
 DOMAIN_BLACKLIST = {
-    "js.design", "zenvideo.qq.com"
+    "trae.cn", "trae.ai", "js.design", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
     "qq.com", "google.com", "github.com", "youtube.com",
@@ -43,43 +43,71 @@ DOMAIN_WHITELIST = {
 }
 ALLOWED_SUBDOMAINS = {
     # 核心访问类
-    "www", "web", "site", "portal", "main",
+    "www", "web", "site", "portal", "main", "homepage", "index",
+    "central", "hub", "root", "base", "primary", "entry", "gateway",
     # 内容创作与展示类
-    "blog", "note", "paper", "article", "story",
-    "doc", "docs", "wiki", "book", "press",
+    "article", "author", "blog", "column", "content",
+    "doc", "docs", "draft", "file", "guide", "help", "hint",
+    "library", "manual", "note", "notes", "page", "paper", "press",
+    "read", "story", "tutorial", "wiki", "book", "booklet",
     # 交互社区类
-    "bbs", "forum", "chat", "talk", "group",
-    "social", "club", "community",
+    "chat", "club", "community", "comment", "conversation",
+    "discussion", "forum", "group",
+    "message", "post", "reply", "social", "talk", "thread",
+    "bbs", "board", "bulletin",
     # 功能服务类
-    "api", "app", "tool", "tools", "service",
-    "admin", "auth", "login", "account", "user",
+    "account", "admin", "api", "app", "auth", "service",
+    "dev", "developer", "edit", "editor", "function", "login",
+    "manage", "manager", "member", "profile", "register", "setting",
+    "tool", "tools", "user", "users",
     # 通信与联系类
-    "mail", "email", "contact", "msg", "notify",
+    "contact", "customer", "email", "feedback",
+    "mail", "message", "msg", "notify", "notification",
+    "support", "subscribe",
     # 资源存储与分发类
-    "cdn", "img", "pic", "image", "file", "idc",
-    "pan", "drive", "store", "archive", "photo", "yun",
+    "archive", "asset", "cdn", "cloud",
+    "data", "database", "drive", "file", "files",
+    "image", "images", "img", "media", "pan", "pic", "pics",
+    "storage", "store", "video", "videos", "yun",
     # 设备与平台类
-    "pc", "mobile", "ios", "android",
-    "applet", "client", "device",
+    "android", "applet", "client", "console",
+    "device", "desktop", "ios", "mobile", "pad", "pc",
+    "server", "system", "tablet",
     # 场景与环境类
-    "dev", "test", "staging", "prod", "beta",
-    "cloud", "local", "home", "office", "lab",
+    "beta", "cloud", "dev",
+    "home", "lab", "local", "live",
+    "office", "online", "prod",
+    "staging", "test",
     # 业务场景类
-    "shop", "store", "buy", "sell", "pay",
-    "map", "location", "live", "video", "stream",
-    "edu", "learn", "class", "course", "game", "dos"
+    "bank", "buy", "class", "course", "edu", "education",
+    "game", "games", "learn", "location", "map", "market",
+    "pay", "sale", "sell", "shop", "store", "stream",
+    "ticket", "video", "watch"
 }
 
 # 网络请求配置
 HTTP_CONFIG = {
     'timeout': 20,  # 请求超时时间(秒)
-    'max_redirects': 0,  # 禁用自动跳转
+    'max_redirects': 0,  # 禁用自动跳转(我们将手动处理)
     'headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
         'Connection': 'keep-alive'
     }
+}
+
+# URL跳转配置
+REDIRECT_CONFIG = {
+    'max_redirects': 10,  # 最大跳转次数，防止无限循环
+    'js_redirect_patterns': [
+        r'window\.location\.href\s*=\s*["\'](.*?)["\']',
+        r'window\.location\s*=\s*["\'](.*?)["\']',
+        r'location\.href\s*=\s*["\'](.*?)["\']',
+        r'location\s*=\s*["\'](.*?)["\']',
+        r'redirect\s*\(\s*["\'](.*?)["\']\s*\)',
+        r'window\.open\s*\(\s*["\'](.*?)["\']\s*\)'
+    ]
 }
 
 # 文件路径配置
@@ -105,7 +133,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List, Dict, Set, Tuple, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urljoin
 
 import requests
 import validators
@@ -259,20 +287,112 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     return base_url, None
 
 
+def follow_redirects(url: str) -> Tuple[str, int, str]:
+    """
+    跟踪URL跳转，包括HTTP重定向和JS跳转
+    返回最终URL、状态码和状态描述
+    """
+    visited_urls = set()
+    current_url = url
+    redirect_count = 0
+
+    while redirect_count < REDIRECT_CONFIG['max_redirects']:
+        if current_url in visited_urls:
+            # 检测到循环跳转，返回当前URL
+            return current_url, 302, f"循环跳转 detected after {redirect_count} steps"
+        visited_urls.add(current_url)
+
+        try:
+            # 发送请求检查状态和可能的跳转
+            response = requests.get(
+                current_url,
+                headers=HTTP_CONFIG['headers'],
+                timeout=HTTP_CONFIG['timeout'],
+                allow_redirects=False,
+                stream=True  # 不下载完整内容，提高效率
+            )
+
+            # 处理HTTP重定向
+            if 300 <= response.status_code < 400 and 'Location' in response.headers:
+                next_url = response.headers['Location']
+                # 处理相对路径
+                next_url = urljoin(current_url, next_url)
+                logger.info(f"HTTP重定向: {current_url} -> {next_url}")
+                current_url = next_url
+                redirect_count += 1
+                continue
+
+            # 处理JS跳转 (检测常见的JS跳转模式)
+            if response.status_code == 200 and 'text/html' in response.headers.get('Content-Type', ''):
+                # 只读取部分内容来检测JS跳转，提高效率
+                content = response.raw.read(8192).decode('utf-8', errors='ignore')
+
+                for pattern in REDIRECT_CONFIG['js_redirect_patterns']:
+                    match = re.search(pattern, content, re.IGNORECASE)
+                    if match:
+                        js_redirect_url = match.group(1)
+                        # 处理相对路径
+                        js_redirect_url = urljoin(current_url, js_redirect_url)
+                        logger.info(f"JS跳转检测: {current_url} -> {js_redirect_url}")
+                        current_url = js_redirect_url
+                        redirect_count += 1
+                        response.close()  # 关闭当前连接
+                        break
+                else:
+                    # 没有找到JS跳转模式，结束跳转跟踪
+                    return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转"
+                continue
+
+            # 如果没有更多跳转，返回当前URL和状态
+            return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转"
+
+        except requests.exceptions.SSLError:
+            # HTTPS证书错误，尝试用HEAD请求验证
+            logger.info(f"HTTPS证书错误，尝试HEAD请求验证: {current_url}")
+            try:
+                # 发送HEAD请求验证，不验证证书
+                head_response = requests.head(
+                    current_url,
+                    headers=HTTP_CONFIG['headers'],
+                    timeout=HTTP_CONFIG['timeout'],
+                    allow_redirects=False,
+                    verify=False  # 不验证证书
+                )
+                # 如果HEAD请求成功，说明服务器可访问，继续处理
+                logger.info(f"HEAD请求验证成功，忽略证书错误: {current_url}")
+                return current_url, 200, "HTTPS证书错误但HEAD请求验证成功"
+            except Exception as e:
+                # HEAD请求也失败，确认无法访问
+                return current_url, 495, "HTTPS证书错误"
+        except Exception as e:
+            return current_url, 500, f"请求错误: {str(e)}"
+
+    # 达到最大跳转次数
+    return current_url, 302, f"达到最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})"
+
+
 def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """检查URL可访问性并处理"""
+    """检查URL可访问性并处理跳转，返回最终URL"""
     try:
         # 强制使用HTTPS
         if url.startswith('http://'):
             url = url.replace('http://', 'https://')
 
+        # 跟踪所有跳转，获取最终URL
+        final_url, status_code, status_msg = follow_redirects(url)
+        logger.info(f"URL跳转跟踪结果: {final_url} (状态码: {status_code}, {status_msg})")
+
+        # 检查是否是HTTPS错误或500以上状态码
+        if status_code == 495 or status_code >= 500:
+            return False, f"URL访问失败: {status_msg} (状态码: {status_code})", url, None
+
         # 检查URL是否符合处理条件
-        is_acceptable, reason = is_url_acceptable(url)
+        is_acceptable, reason = is_url_acceptable(final_url)
         if not is_acceptable:
             return False, f"URL不符合处理条件: {reason}", url, None
 
-        # 验证URL格式
-        processed_url, error = validate_and_process_url(url)
+        # 验证最终URL格式
+        processed_url, error = validate_and_process_url(final_url)
         if not processed_url:
             return False, f"URL格式验证失败: {error}", url, None
 
@@ -286,7 +406,7 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
 
 # ============================== 网站描述处理函数 ==============================
 def is_valid_text(text: str) -> bool:
-    """检查文本是否有效（不是乱码）"""
+    """检查文本是否有效（不是乱码），兼容中文、英文和俄文"""
     if not text or not text.strip():
         return False
 
@@ -295,14 +415,19 @@ def is_valid_text(text: str) -> bool:
     if not text_clean:
         return False
 
-    # 定义有效字符集（中文、英文、数字、常见标点）
+    # 定义有效字符集（中文、俄文、英文、数字、多语言常见标点）
+    # 中文：\u4e00-\u9fa5 及中文标点
+    # 俄文：\u0400-\u04FF（西里尔字母）及俄文引号«»
+    # 英文：a-zA-Z
+    # 数字：0-9
+    # 通用标点：,.;:!?()等
     valid_chars = re.findall(
-        r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:!?()（）《》“”‘’\s]',
+        r'[\u4e00-\u9fa5\u0400-\u04FFa-zA-Z0-9，。,.;:!?()（）《》“”‘’«»\s]',
         text_clean
     )
 
-    # 有效字符占比需超过70%
-    return len(valid_chars) / len(text_clean) > 0.7
+    # 有效字符占比需超过60%
+    return len(valid_chars) / len(text_clean) > 0.6
 
 
 def clean_html_entities(text: str) -> str:
@@ -335,7 +460,7 @@ def fetch_website_description(url: str) -> Optional[str]:
     if not url:
         return None
 
-    invalid_descriptions = {"未找到描述", "null", "暂无描述", "无描述", "暂无藐视"}
+    invalid_descriptions = {"null", "暂无描述"}
     api_list = [
         {
             "name": "geeker",
@@ -424,7 +549,7 @@ def clean_description(url: str, original_desc: str = "") -> Optional[str]:
 
     # 处理API获取到的描述
     if api_desc:
-        if ai_desc := ask_openai(f"网站描述：{api_desc}\n网址：{domain}"):
+        if ai_desc := ask_openai(f"网址：{domain}\n网站描述：{api_desc}"):
             return ai_desc
         logger.warning(f"API获取到描述但AI处理失败，丢弃URL: {url}")
         return None
@@ -714,7 +839,7 @@ def process_url(
     background_color = item.get('backgroundColor', '')
     original_description = item.get('description', '')
 
-    # 检查URL可访问性
+    # 检查URL可访问性和跳转处理
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
     if not accessible:
         logger.warning(f"不可处理URL: {url} - {error}")
@@ -759,7 +884,7 @@ def process_url(
         }
         processed_data.append(WebsiteData(
             name=name,
-            url=final_url,
+            url=final_url,  # 使用跳转后的最终URL
             description=clean_desc,
             img_src=img_src,
             local_filename=filename,
@@ -865,7 +990,9 @@ def main() -> None:
     # 显示配置信息
     logger.info(f"URL处理线程数量: {MAX_WORKERS}")
     logger.info(f"AI模型: {AI_CONFIG['model']}")
+    logger.info(f"AI API密钥环境变量: {AI_CONFIG['api_key_env_var']}")
     logger.info(f"AI最大重试次数: {AI_CONFIG['max_retries']}")
+    logger.info(f"最大URL跳转次数: {REDIRECT_CONFIG['max_redirects']}")
     logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
     logger.info(f"处理分类数量: {len(CATEGORIES)}")
     logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
@@ -901,9 +1028,16 @@ def main() -> None:
         pbar = tqdm(total=len(url_queue), desc="处理URL进度")
 
         def process_with_progress(item, category):
-            # 处理名称中的'-'截断
-            if 'name' in item and '-' in item['name']:
-                item['name'] = item['name'].split('-', 1)[0]
+            # 处理名称中的'-'和'|'截断
+            if 'name' in item:
+                name = item['name']
+                # 先按|截断，取前面部分
+                if '|' in name:
+                    name = name.split('|', 1)[0]
+                # 再按-截断，取前面部分
+                if '-' in name:
+                    name = name.split('-', 1)[0]
+                item['name'] = name.strip()
             process_url(item, category, processed_normalized_urls, processed_domains, processed_data, data_lock)
             pbar.update(1)
 
