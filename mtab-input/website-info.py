@@ -68,7 +68,7 @@ ALLOWED_SUBDOMAINS = {
     "archive", "asset", "cdn", "cloud",
     "data", "database", "drive", "file", "files",
     "image", "images", "img", "media", "pan", "pic", "pics",
-    "storage", "store", "video", "videos", "yun",
+    "storage", "store", "video", "videos", "yun", "photo",
     # 设备与平台类
     "android", "applet", "client", "console",
     "device", "desktop", "ios", "mobile", "pad", "pc",
@@ -82,7 +82,9 @@ ALLOWED_SUBDOMAINS = {
     "bank", "buy", "class", "course", "edu", "education",
     "game", "games", "learn", "location", "map", "market",
     "pay", "sale", "sell", "shop", "store", "stream",
-    "ticket", "video", "watch"
+    "ticket", "video", "watch",
+    # 其他
+    "china", "usa"
 }
 
 # 网络请求配置
@@ -287,19 +289,78 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     return base_url, None
 
 
-def follow_redirects(url: str) -> Tuple[str, int, str]:
+def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
+    """
+    根据跳转历史选择最优URL：
+    1. 仅对主域名相同（包括不同后缀）的URL应用后续规则
+    2. 同一主域名下，优先保留带www的URL；
+    3. 若后缀长度不同（如.com vs .com.hk），保留后缀最短的URL；
+    4. 若无www且后缀长度相同，保留最早出现的URL
+    """
+    if not redirect_history:
+        return original_url
+
+    # 解析所有URL的域名信息
+    url_info = []
+    for url in redirect_history:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        ext = extract(domain)
+
+        url_info.append({
+            "url": url,
+            "main_domain": ext.domain.lower(),  # 核心主域名（如google、baidu）
+            "registered_domain": ext.registered_domain.lower(),  # 带后缀的域名
+            "subdomain": ext.subdomain.lower(),
+            "is_www": ext.subdomain.lower() == "www",
+            "suffix": ext.suffix.lower(),
+            "suffix_length": len(ext.suffix.split('.'))
+        })
+
+    # 获取第一个URL的主域名作为基准
+    base_main_domain = url_info[0]["main_domain"]
+    # 筛选出主域名相同的URL（核心主域一致，允许不同后缀）
+    same_main_domain_urls = [
+        info for info in url_info
+        if info["main_domain"] == base_main_domain
+    ]
+
+    # 如果存在主域名不同的URL，直接返回最终跳转URL
+    if len(same_main_domain_urls) != len(url_info):
+        return redirect_history[-1]
+
+    # 1. 优先保留带www的URL
+    www_urls = [info for info in same_main_domain_urls if info["is_www"]]
+    if www_urls:
+        # 带www时选择后缀最短的
+        www_urls_sorted = sorted(www_urls, key=lambda x: x["suffix_length"])
+        return www_urls_sorted[0]["url"]
+
+    # 2. 无www时保留后缀最短的URL
+    non_www_urls_sorted = sorted(same_main_domain_urls, key=lambda x: x["suffix_length"])
+    shortest_suffix_urls = [
+        info for info in non_www_urls_sorted
+        if info["suffix_length"] == non_www_urls_sorted[0]["suffix_length"]
+    ]
+
+    # 3. 后缀长度相同时保留最早出现的URL
+    return shortest_suffix_urls[0]["url"]
+
+
+def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
     """
     跟踪URL跳转，包括HTTP重定向和JS跳转
-    返回最终URL、状态码和状态描述
+    返回最终URL、状态码、状态描述和跳转历史
     """
     visited_urls = set()
     current_url = url
+    redirect_history = [current_url]
     redirect_count = 0
 
     while redirect_count < REDIRECT_CONFIG['max_redirects']:
         if current_url in visited_urls:
             # 检测到循环跳转，返回当前URL
-            return current_url, 302, f"循环跳转 detected after {redirect_count} steps"
+            return current_url, 302, f"循环跳转 detected after {redirect_count} steps", redirect_history
         visited_urls.add(current_url)
 
         try:
@@ -319,6 +380,7 @@ def follow_redirects(url: str) -> Tuple[str, int, str]:
                 next_url = urljoin(current_url, next_url)
                 logger.info(f"HTTP重定向: {current_url} -> {next_url}")
                 current_url = next_url
+                redirect_history.append(current_url)
                 redirect_count += 1
                 continue
 
@@ -335,16 +397,17 @@ def follow_redirects(url: str) -> Tuple[str, int, str]:
                         js_redirect_url = urljoin(current_url, js_redirect_url)
                         logger.info(f"JS跳转检测: {current_url} -> {js_redirect_url}")
                         current_url = js_redirect_url
+                        redirect_history.append(current_url)
                         redirect_count += 1
                         response.close()  # 关闭当前连接
                         break
                 else:
                     # 没有找到JS跳转模式，结束跳转跟踪
-                    return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转"
+                    return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
                 continue
 
             # 如果没有更多跳转，返回当前URL和状态
-            return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转"
+            return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
 
         except requests.exceptions.SSLError:
             # HTTPS证书错误，尝试用HEAD请求验证
@@ -360,15 +423,15 @@ def follow_redirects(url: str) -> Tuple[str, int, str]:
                 )
                 # 如果HEAD请求成功，说明服务器可访问，继续处理
                 logger.info(f"HEAD请求验证成功，忽略证书错误: {current_url}")
-                return current_url, 200, "HTTPS证书错误但HEAD请求验证成功"
+                return current_url, 200, "HTTPS证书错误但HEAD请求验证成功", redirect_history
             except Exception as e:
                 # HEAD请求也失败，确认无法访问
-                return current_url, 495, "HTTPS证书错误"
+                return current_url, 495, "HTTPS证书错误", redirect_history
         except Exception as e:
-            return current_url, 500, f"请求错误: {str(e)}"
+            return current_url, 500, f"请求错误: {str(e)}", redirect_history
 
     # 达到最大跳转次数
-    return current_url, 302, f"达到最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})"
+    return current_url, 302, f"达到最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})", redirect_history
 
 
 def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
@@ -378,21 +441,23 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
         if url.startswith('http://'):
             url = url.replace('http://', 'https://')
 
-        # 跟踪所有跳转，获取最终URL
-        final_url, status_code, status_msg = follow_redirects(url)
-        logger.info(f"URL跳转跟踪结果: {final_url} (状态码: {status_code}, {status_msg})")
+        # 跟踪所有跳转，获取最终URL和跳转历史
+        final_url, status_code, status_msg, redirect_history = follow_redirects(url)
+        # 应用URL优选逻辑
+        preferred_url = get_preferred_url(url, redirect_history)
+        logger.info(f"URL跳转跟踪结果: {preferred_url} (状态码: {status_code}, {status_msg})")
 
         # 检查是否是HTTPS错误或500以上状态码
         if status_code == 495 or status_code >= 500:
             return False, f"URL访问失败: {status_msg} (状态码: {status_code})", url, None
 
         # 检查URL是否符合处理条件
-        is_acceptable, reason = is_url_acceptable(final_url)
+        is_acceptable, reason = is_url_acceptable(preferred_url)
         if not is_acceptable:
             return False, f"URL不符合处理条件: {reason}", url, None
 
         # 验证最终URL格式
-        processed_url, error = validate_and_process_url(final_url)
+        processed_url, error = validate_and_process_url(preferred_url)
         if not processed_url:
             return False, f"URL格式验证失败: {error}", url, None
 
@@ -947,7 +1012,10 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
     seen_normalized_urls = set()
 
     for site in sorted_websites:
-        normalized = normalize_url(site.url)
+        # 确保URL末尾带有斜杠
+        url_with_slash = site.url.rstrip('/') + '/'
+        normalized = normalize_url(url_with_slash)
+
         if normalized in seen_normalized_urls:
             logger.warning(f"生成SQL时发现重复URL，已跳过: {site.url}")
             continue
@@ -959,19 +1027,19 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
         escaped_description = site.description.replace("'", "''")
 
         # 提取域名
-        domain_parts = extract(site.url.rstrip('/'))
+        domain_parts = extract(url_with_slash)
         domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}" if domain_parts.subdomain else domain_parts.registered_domain
 
         # 获取分类ID
         category_id = CATEGORY_IDS.get(site.category, 15)
 
-        # 生成SQL语句
+        # 生成SQL语句，使用带斜杠的URL
         sql = (
             f"INSERT INTO `mtab`.`linkstore` "
             f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
             f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
             f"VALUES "
-            f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{site.url}', "
+            f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{url_with_slash}', "
             f"'icon', '1x1', '2025-01-01 00:00:00', 0, {category_id}, '{escaped_description}', '{domain}', "
             f"0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"
         )
