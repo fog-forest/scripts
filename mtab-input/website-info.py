@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
-# @Date  : 2025/07/22
+# @Date  : 2025/07/24
 # @Desc  : mTab多分类网站书签导入工具（AI）
-# @Func  : 批量获取多分类网站信息，处理URL去重、AI总结网站描述、图标下载转换压缩SVG，最终生成SQL导入语句
+# @Func  : 批量获取多分类网站信息，处理URL去重、AI生成标题和描述、图标下载转换压缩SVG，最终生成SQL导入语句
 
 
 # ============================== 公共配置参数区 ==============================
@@ -23,14 +23,14 @@ AI_CONFIG = {
 
 # 分类配置
 CATEGORIES = [
-    "ai", "app", "news", "music", "tech", "photos", "life", "education",
+    "hot", "ai", "app", "news", "music", "tech", "photos", "life", "education",
     "entertainment", "shopping", "social", "read", "sports", "finance", "others"
 ]
 CATEGORY_IDS = {
-    "ai": 1, "app": 1, "news": 2, "music": 3,
-    "tech": 4, "photos": 5, "life": 6, "education": 7,
-    "entertainment": 8, "shopping": 9, "social": 10, "read": 11,
-    "sports": 12, "finance": 13, "others": 14
+    "hot": 1, "ai": 2, "app": 2, "news": 3, "music": 4,
+    "tech": 5, "photos": 6, "life": 7, "education": 8,
+    "entertainment": 9, "shopping": 10, "social": 11, "read": 12,
+    "sports": 13, "finance": 14, "others": 15
 }
 
 # 域名过滤配置
@@ -90,7 +90,6 @@ ALLOWED_SUBDOMAINS = {
 # 网络请求配置
 HTTP_CONFIG = {
     'timeout': 20,  # 请求超时时间(秒)
-    'max_redirects': 0,  # 禁用自动跳转(我们将手动处理)
     'headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -124,6 +123,7 @@ INITIAL_RETRY_DELAY = 1  # 初始重试延迟(秒)
 
 # 导入依赖库
 import io
+import json
 import logging
 import os
 import random
@@ -153,9 +153,9 @@ from tqdm import tqdm
 # 数据结构定义
 @dataclass
 class WebsiteData:
-    name: str  # 网站名称
+    name: str  # 网站名称（AI生成）
     url: str  # 网站URL
-    description: str  # 网站描述
+    description: str  # 网站描述（AI生成）
     img_src: str  # 图标原始URL
     local_filename: str  # 本地存储的图标文件名
     category: str  # 所属分类
@@ -469,7 +469,7 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
         return False, f"URL处理异常: {str(e)[:20]}", url, normalized
 
 
-# ============================== 网站描述处理函数 ==============================
+# ============================== 网站信息处理函数 ==============================
 def is_valid_text(text: str) -> bool:
     """检查文本是否有效（不是乱码），兼容中文、英文和俄文"""
     if not text or not text.strip():
@@ -481,11 +481,6 @@ def is_valid_text(text: str) -> bool:
         return False
 
     # 定义有效字符集（中文、俄文、英文、数字、多语言常见标点）
-    # 中文：\u4e00-\u9fa5 及中文标点
-    # 俄文：\u0400-\u04FF（西里尔字母）及俄文引号«»
-    # 英文：a-zA-Z
-    # 数字：0-9
-    # 通用标点：,.;:!?()等
     valid_chars = re.findall(
         r'[\u4e00-\u9fa5\u0400-\u04FFa-zA-Z0-9，。,.;:!?()（）《》“”‘’«»\s]',
         text_clean
@@ -501,8 +496,8 @@ def clean_html_entities(text: str) -> str:
     return re.sub(r'&#x[0-9a-fA-F]+;', '', text)  # 移除其他实体
 
 
-def fetch_api(api, url: str) -> Optional[str]:
-    """调用API获取网站描述"""
+def fetch_api(api, url: str) -> Optional[Dict[str, str]]:
+    """调用API获取网站标题和描述"""
     try:
         encoded_url = quote(url)
         api_url = api['url_template'].format(encoded_url)
@@ -520,58 +515,99 @@ def fetch_api(api, url: str) -> Optional[str]:
         return None
 
 
-def fetch_website_description(url: str) -> Optional[str]:
-    """通过多个API获取网站描述"""
+def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
+    """通过多个API获取网站标题和描述"""
     if not url:
         return None
 
     invalid_descriptions = {"null", "暂无描述"}
+    invalid_titles = {"null", "暂无标题", ""}
     api_list = [
         {
             "name": "geeker",
             "url_template": "https://geeker.moe/tdk.php?url={}",
-            "parse_func": lambda data: desc if (desc := data.get('description', ''))
-                                               and data.get('code') == 1 and desc.strip()
-                                               and desc not in invalid_descriptions and is_valid_text(desc) else None
+            "parse_func": lambda data: {
+                "title": title,
+                "description": desc
+            } if (desc := data.get('description', ''))
+                 and (title := data.get('title', ''))
+                 and data.get('code') == 1
+                 and desc.strip()
+                 and desc not in invalid_descriptions
+                 and title.strip()
+                 and title not in invalid_titles
+                 and is_valid_text(desc)
+            else None
         },
         {
             "name": "shanhe",
             "url_template": "https://shanhe.kim/api/wz/web_tdk.php?url={}",
-            "parse_func": lambda data: desc if (desc := data.get('description', ''))
-                                               and data.get('code') == 1 and is_valid_text(desc) else None
+            "parse_func": lambda data: {
+                "title": title,
+                "description": desc
+            } if (desc := data.get('description', ''))
+                 and (title := data.get('title', ''))
+                 and data.get('code') == 1
+                 and is_valid_text(desc)
+                 and title.strip()
+                 and title not in invalid_titles
+            else None
         },
         {
             "name": "suol",
             "url_template": "https://api.suol.cc/v1/zs_wzxx.php?url={}",
-            "parse_func": lambda data: desc if (desc := data.get('description', ''))
-                                               and data.get('code') == 1 and is_valid_text(desc) else None
+            "parse_func": lambda data: {
+                "title": title,
+                "description": desc
+            } if (desc := data.get('description', ''))
+                 and (title := data.get('title', ''))
+                 and data.get('code') == 1
+                 and is_valid_text(desc)
+                 and title.strip()
+                 and title not in invalid_titles
+            else None
         },
         {
             "name": "ahfi",
             "url_template": "https://api.ahfi.cn/api/websiteinfo?url={}",
-            "parse_func": lambda data: desc if (desc := data.get('data', {}).get('description', ''))
-                                               and desc.strip() and desc not in invalid_descriptions and is_valid_text(
-                desc) else None
+            "parse_func": lambda data: {
+                "title": title,
+                "description": desc
+            } if (desc := data.get('data', {}).get('description', ''))
+                 and (title := data.get('data', {}).get('title', ''))
+                 and desc.strip()
+                 and desc not in invalid_descriptions
+                 and title.strip()
+                 and title not in invalid_titles
+                 and is_valid_text(desc)
+            else None
         }
     ]
 
-    # 尝试所有API获取描述
+    # 尝试所有API获取信息
     for api in api_list:
         try:
-            if website_desc := fetch_api(api, url):
-                return website_desc.strip().replace('\n', ' ').replace('\r', ' ')
-        except Exception:
+            if website_info := fetch_api(api, url):
+                # 清理标题和描述
+                cleaned_title = website_info["title"].strip().replace('\n', ' ').replace('\r', ' ')
+                cleaned_desc = website_info["description"].strip().replace('\n', ' ').replace('\r', ' ')
+                return {
+                    "title": cleaned_title,
+                    "description": cleaned_desc
+                }
+        except Exception as e:
+            logger.warning(f"{api['name']} API失败: {str(e)}")
             continue
 
     return None
 
 
-def ask_openai(question: str) -> Optional[str]:
-    """调用AI接口生成描述（带重试机制）"""
+def ask_openai(question: str) -> Optional[Dict[str, str]]:
+    """调用AI接口生成标题和描述（带重试机制）"""
     # 定义消息类型
     system_msg: ChatCompletionSystemMessageParam = {
         "role": "system",
-        "content": "我会给你一个网址和网站描述，优先通过网址帮我生成网站收藏的简短中文描述，长度控制在100字符（varchar）内，越短越好末尾不需要标点符号，直接发送给我描述即可"
+        "content": "我会给你一个网址、网站标题和网站描述，优先通过网址帮我生成网站收藏的简短标题和简短中文描述，标题尽量在一个词，描述长度控制在100字符（varchar）内，越短越好末尾不需要标点符号，返回两个字段title、description的JSON格式给我"
     }
 
     user_msg: ChatCompletionUserMessageParam = {
@@ -592,8 +628,29 @@ def ask_openai(question: str) -> Optional[str]:
             )
 
             result = response.choices[0].message.content.strip()
-            return result if result != "不知道" else None
+            if result == "不知道":
+                return None
 
+            # 移除可能的JSON代码块标记
+            result = re.sub(r'^```json\s*', '', result)  # 移除开头的```json
+            result = re.sub(r'\s*```$', '', result)  # 移除结尾的```
+
+            # 解析JSON响应
+            json_result = json.loads(result)
+            # 验证必要字段
+            if "title" in json_result and "description" in json_result:
+                return {
+                    "title": json_result["title"].strip(),
+                    "description": json_result["description"].strip()
+                }
+            return None
+
+        except json.JSONDecodeError:
+            logger.warning(f"AI返回的不是有效的JSON: {result}")
+            if attempt < AI_CONFIG["max_retries"]:
+                time.sleep(AI_CONFIG["retry_delay"] * attempt)
+                continue
+            return None
         except Exception as e:
             logger.warning(f"AI调用失败 (尝试 {attempt}/{AI_CONFIG['max_retries']}): {str(e)}")
             if attempt < AI_CONFIG["max_retries"]:
@@ -603,30 +660,37 @@ def ask_openai(question: str) -> Optional[str]:
     return None
 
 
-def clean_description(url: str, original_desc: str = "") -> Optional[str]:
-    """清理并优化网站描述（结合API和AI）"""
-    # 清理原始描述
-    cleaned_original = clean_html_entities(original_desc) if original_desc else ""
+def clean_website_info(url: str, original_title: str = "", original_desc: str = "") -> Optional[Dict[str, str]]:
+    """清理并优化网站标题和描述（结合API和AI）"""
+    # 清理原始信息
+    cleaned_original_title = clean_html_entities(original_title).strip() if original_title else ""
+    cleaned_original_desc = clean_html_entities(original_desc).strip() if original_desc else ""
 
-    # 尝试通过API获取描述
-    api_desc = fetch_website_description(url)
+    # 尝试通过API获取信息
+    api_info = fetch_website_info(url)
     domain = extract_domain(url)
 
-    # 处理API获取到的描述
-    if api_desc:
-        if ai_desc := ask_openai(f"网址：{domain}\n网站描述：{api_desc}"):
-            return ai_desc
-        logger.warning(f"API获取到描述但AI处理失败，丢弃URL: {url}")
+    # 处理API获取到的信息
+    if api_info:
+        if ai_info := ask_openai(f"网址：{domain}\n网站标题：{api_info['title']}\n网站描述：{api_info['description']}"):
+            return ai_info
+        logger.warning(f"API获取到信息但AI处理失败，丢弃URL: {url}")
         return None
 
     # 白名单域名直接调用AI
     if is_domain_whitelisted(url):
-        if ai_desc := ask_openai(f"网址：{domain}"):
-            return ai_desc
+        prompt = f"网址：{domain}"
+        if cleaned_original_title:
+            prompt += f"\n网站标题：{cleaned_original_title}"
+        if cleaned_original_desc:
+            prompt += f"\n网站描述：{cleaned_original_desc}"
+
+        if ai_info := ask_openai(prompt):
+            return ai_info
         logger.warning(f"白名单域名但AI调用失败，丢弃URL: {url}")
         return None
 
-    # 非白名单且无API描述则丢弃
+    # 非白名单且无API信息则丢弃
     return None
 
 
@@ -891,18 +955,18 @@ def process_url(
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ):
-    """处理单个URL，包括验证、去重、描述生成和图标下载"""
-    # 验证名称
-    name = item.get('name', '').strip()
-    if not name:
-        logger.warning("丢弃name为空的条目")
-        return
-
+    """处理单个URL，包括验证、去重、标题描述生成和图标下载"""
     # 提取基础信息
+    original_title = item.get('name', '').strip()
     url = item.get('url', '')
     img_src = item.get('imgSrc', '')
     background_color = item.get('backgroundColor', '')
-    original_description = item.get('description', '')
+    original_desc = item.get('description', '')
+
+    # 验证基础信息
+    if not url:
+        logger.warning("丢弃url为空的条目")
+        return
 
     # 检查URL可访问性和跳转处理
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
@@ -919,9 +983,10 @@ def process_url(
         if normalized_url in processed_normalized_urls:
             return
 
-    # 处理描述
-    clean_desc = clean_description(final_url, original_description)
-    if not clean_desc:
+    # 处理标题和描述
+    website_info = clean_website_info(final_url, original_title, original_desc)
+    if not website_info:
+        logger.warning(f"无法生成有效的标题和描述，丢弃URL: {final_url}")
         return
 
     # 处理颜色
@@ -948,9 +1013,9 @@ def process_url(
             'filename': filename
         }
         processed_data.append(WebsiteData(
-            name=name,
+            name=website_info["title"],  # 使用AI生成的标题
             url=final_url,  # 使用跳转后的最终URL
-            description=clean_desc,
+            description=website_info["description"],  # 使用AI生成的描述
             img_src=img_src,
             local_filename=filename,
             category=category,
@@ -1096,16 +1161,6 @@ def main() -> None:
         pbar = tqdm(total=len(url_queue), desc="处理URL进度")
 
         def process_with_progress(item, category):
-            # 处理名称中的'-'和'|'截断
-            if 'name' in item:
-                name = item['name']
-                # 先按|截断，取前面部分
-                if '|' in name:
-                    name = name.split('|', 1)[0]
-                # 再按-截断，取前面部分
-                if '-' in name:
-                    name = name.split('-', 1)[0]
-                item['name'] = name.strip()
             process_url(item, category, processed_normalized_urls, processed_domains, processed_data, data_lock)
             pbar.update(1)
 
