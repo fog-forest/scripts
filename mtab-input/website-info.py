@@ -2,40 +2,45 @@
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
 # @Date  : 2025/07/22
-# @Desc  : mTab多分类网站书签导出工具
-# @Func  : 批量获取多分类网站信息，处理URL去重、图标下载转换，最终生成SQL导入语句
+# @Desc  : mTab多分类网站书签导入工具（AI）
+# @Func  : 批量获取多分类网站信息，处理URL去重、AI总结网站描述、图标下载转换压缩SVG，最终生成SQL导入语句
 
 
-# ============================== 配置参数区 ==============================
+# ============================== 公共配置参数区 ==============================
 # 线程数量配置
 MAX_WORKERS = 50  # 并发处理URL的线程数量
 
-# 需要处理的分类列表
+# AI模型配置
+AI_CONFIG = {
+    "api_key": "AI_API_KEY",
+    "base_url": "https://www.gptapi.us/v1",
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": 1024,
+    "max_retries": 2,  # AI调用失败最大重试次数
+    "retry_delay": 1  # 重试延迟时间(秒)
+}
+
+# 分类配置
 CATEGORIES = [
     "ai", "app", "news", "music", "tech", "photos", "life", "education",
     "entertainment", "shopping", "social", "read", "sports", "finance", "others"
 ]
-
-# 分类ID映射表，用于SQL生成
 CATEGORY_IDS = {
-    "ai": 1, "app": 2, "news": 3, "music": 4,
-    "tech": 5, "photos": 6, "life": 7, "education": 8,
-    "entertainment": 9, "shopping": 10, "social": 11, "read": 12,
-    "sports": 13, "finance": 14, "others": 15
+    "ai": 1, "app": 1, "news": 2, "music": 3,
+    "tech": 4, "photos": 5, "life": 6, "education": 7,
+    "entertainment": 8, "shopping": 9, "social": 10, "read": 11,
+    "sports": 12, "finance": 13, "others": 14
 }
 
-# 域名黑名单，包含这些域名的URL将被直接丢弃（最高优先级）
+# 域名过滤配置
 DOMAIN_BLACKLIST = {
-    "trae.ai", "trae.cn", "js.design", "zenvideo.qq.com"
+    "js.design", "zenvideo.qq.com"
 }
-
-# 域名白名单，白名单内的域名允许处理非www开头的URL（次高优先级）
 DOMAIN_WHITELIST = {
-    "qq.com", "google.com", "github.com", "yiyan.baidu.com",
-    "outlook.live.com"
+    "qq.com", "google.com", "github.com", "youtube.com",
+    "yiyan.baidu.com", "outlook.live.com"
 }
-
-# 允许的常见子域名列表
 ALLOWED_SUBDOMAINS = {
     # 核心访问类
     "www", "web", "site", "portal", "main",
@@ -52,10 +57,9 @@ ALLOWED_SUBDOMAINS = {
     "mail", "email", "contact", "msg", "notify",
     # 资源存储与分发类
     "cdn", "img", "pic", "image", "file", "idc",
-    "pan", "drive", "store", "archive", "photo",
-    "yun",
+    "pan", "drive", "store", "archive", "photo", "yun",
     # 设备与平台类
-    "pc", "mobile", "m", "ios", "android",
+    "pc", "mobile", "ios", "android",
     "applet", "client", "device",
     # 场景与环境类
     "dev", "test", "staging", "prod", "beta",
@@ -63,10 +67,10 @@ ALLOWED_SUBDOMAINS = {
     # 业务场景类
     "shop", "store", "buy", "sell", "pay",
     "map", "location", "live", "video", "stream",
-    "edu", "learn", "class", "course", "game"
+    "edu", "learn", "class", "course", "game", "dos"
 }
 
-# HTTP请求配置
+# 网络请求配置
 HTTP_CONFIG = {
     'timeout': 20,  # 请求超时时间(秒)
     'max_redirects': 0,  # 禁用自动跳转
@@ -78,12 +82,13 @@ HTTP_CONFIG = {
     }
 }
 
-# 图标存储目录
+# 文件路径配置
 ICON_DIRECTORY = 'icons'
-
-# SQL输出文件路径
 SQL_OUTPUT_FILE = "mtab_import.sql"
 
+# 图片下载配置
+MAX_IMAGE_RETRIES = 3  # 最大重试次数
+INITIAL_RETRY_DELAY = 1  # 初始重试延迟(秒)
 # ========================================================================
 
 
@@ -105,6 +110,12 @@ from urllib.parse import quote, urlparse
 import requests
 import validators
 from PIL import Image
+from openai import OpenAI
+from openai.types.chat import (
+    ChatCompletionSystemMessageParam,
+    ChatCompletionUserMessageParam,
+    ChatCompletionMessageParam
+)
 from tldextract import extract
 from tqdm import tqdm
 
@@ -121,15 +132,33 @@ class WebsiteData:
     background_color: str  # 背景颜色
 
 
+# 初始化AI客户端 - 从环境变量获取API密钥
+def get_ai_client():
+    """从环境变量获取API密钥并初始化AI客户端"""
+    api_key = os.getenv(AI_CONFIG["api_key_env_var"])
+    if not api_key:
+        raise EnvironmentError(f"未设置环境变量 {AI_CONFIG['api_key_env_var']}，请配置API密钥")
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=AI_CONFIG["base_url"]
+    )
+
+
+# 初始化AI客户端
+ai_client = get_ai_client()
+
+
 # ============================== 日志配置 ==============================
 def setup_logger() -> logging.Logger:
+    """配置并返回日志记录器"""
     logger = logging.getLogger('mtab_exporter')
-    logger.setLevel(logging.INFO)  # 降低日志级别，减少输出
+    logger.setLevel(logging.INFO)
 
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)  # 只输出INFO及以上级别
+    ch.setLevel(logging.INFO)
 
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')  # 简化日志格式，去掉线程ID
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     ch.setFormatter(formatter)
 
     if logger.handlers:
@@ -143,397 +172,81 @@ def setup_logger() -> logging.Logger:
 logger = setup_logger()
 
 
-# ============================== 主处理函数 ==============================
-def main() -> None:
-    # 图片下载重试配置 - 在主函数中定义，便于日志输出和后续传递
-    MAX_IMAGE_RETRIES = 3  # 最大重试次数
-    INITIAL_RETRY_DELAY = 1  # 初始重试延迟(秒)
-
-    logger.info("\n" + "=" * 60)
-    logger.info("开始执行mTab多分类网站书签导出工具")
-    logger.info("=" * 60 + "\n")
-
-    # 配置信息（只保留关键信息）
-    logger.info(f"URL处理线程数量: {MAX_WORKERS}")
-    logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
-    logger.info(f"图片初始重试延迟: {INITIAL_RETRY_DELAY}秒")
-    logger.info(f"处理分类数量: {len(CATEGORIES)}")
-    logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
-    logger.info(f"域名白名单数量: {len(DOMAIN_WHITELIST)}\n")
-
-    # 初始化
-    clear_directory(ICON_DIRECTORY)
-    processed_data: List[WebsiteData] = []
-    processed_normalized_urls: Set[str] = set()
-    processed_domains: Dict[str, Dict[str, str]] = {}
-    url_queue = []  # 存储所有待处理的URL任务
-    queue_lock = threading.Lock()  # 队列操作锁
-    data_lock = threading.Lock()  # 数据操作锁
-
-    # 第一步：多线程获取所有分类的URL并加入队列
-    logger.info("===== 开始收集所有分类的URL =====")
-    with ThreadPoolExecutor(max_workers=min(len(CATEGORIES), 2)) as category_executor:
-        futures = [
-            category_executor.submit(
-                process_category,
-                category,
-                url_queue,
-                queue_lock
-            )
-            for category in CATEGORIES
-        ]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"分类URL获取线程出错: {e}")
-
-    logger.info(f"\n共收集到 {len(url_queue)} 个URL待处理\n")
-
-    # 第二步：多线程处理所有URL
-    logger.info("===== 开始多线程处理URL =====")
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as url_executor:
-        pbar = tqdm(total=len(url_queue), desc="处理URL进度")
-
-        def process_with_progress(item, category):
-            # 处理名称中的'-'截断
-            if 'name' in item and '-' in item['name']:
-                item['name'] = item['name'].split('-', 1)[0]  # 只截断第一个'-'
-
-            # 将重试参数传递给处理函数
-            process_url(
-                item,
-                category,
-                processed_normalized_urls,
-                processed_domains,
-                processed_data,
-                data_lock,
-                MAX_IMAGE_RETRIES,
-                INITIAL_RETRY_DELAY
-            )
-            pbar.update(1)
-
-        futures = [
-            url_executor.submit(process_with_progress, item, category)
-            for item, category in url_queue
-        ]
-
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"URL处理线程出错: {e}")
-
-        pbar.close()
-
-    # 后续处理
-    logger.info("\n" + "=" * 60)
-    logger.info(f"所有URL处理完成，共获取 {len(processed_data)} 条不重复数据")
-    logger.info("=" * 60 + "\n")
-
-    if processed_data:
-        print("\n按分类统计:")
-        category_counts = Counter(item.category for item in processed_data)
-        for cat, count in category_counts.items():
-            print(f"- {cat}: {count} 条")
-
-        print("\n前5条数据示例:")
-        for i, item in enumerate(processed_data[:5], 1):
-            print(f"{i}. [{item.category}] {item.name}")
-            print(f"   URL: {item.url}")
-            print(f"   描述: {item.description}")
-            print(f"   本地文件: {item.local_filename}\n")
-
-        # 生成SQL文件
-        sql_content = generate_sql_statements(processed_data)
-        save_file(sql_content, SQL_OUTPUT_FILE)
-
-        print(f"\nSQL导入文件已生成: {SQL_OUTPUT_FILE}")
-        print(f"包含 {len(sql_content.split('INSERT')) - 1} 条INSERT语句")
-    else:
-        logger.warning("未处理任何数据")
-
-    logger.info("\n" + "=" * 60)
-    logger.info("mTab多分类网站书签导出工具执行完成")
-    logger.info("=" * 60 + "\n")
-
-
-# ============================== URL解析工具函数 ==============================
+# ============================== URL处理工具函数 ==============================
 def normalize_url(url: str) -> str:
+    """标准化URL格式"""
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip('/')
 
 
 def extract_domain(url: str) -> str:
+    """提取URL中的域名"""
     parsed = urlparse(url)
     return parsed.netloc.lower()
 
 
-# 增强白名单检测逻辑，确保白名单域名能被正确识别
 def is_domain_whitelisted(url: str) -> bool:
-    # 解析URL获取域名组件
+    """检查域名是否在白名单中"""
     ext = extract(url)
     domain_parts = [part for part in [ext.subdomain, ext.domain, ext.suffix] if part]
     full_domain = ".".join(domain_parts)
 
-    # 1. 检查完整域名是否在白名单（如 yiyan.baidu.com）
+    # 检查完整域名、主域名及所有父域名
     if full_domain in DOMAIN_WHITELIST:
         return True
-
-    # 2. 检查主域名是否在白名单
     if ext.registered_domain in DOMAIN_WHITELIST:
         return True
-
-    # 3. 检查所有可能的父域名
     for i in range(1, len(domain_parts)):
-        parent_domain = ".".join(domain_parts[i:])
-        if parent_domain in DOMAIN_WHITELIST:
+        if ".".join(domain_parts[i:]) in DOMAIN_WHITELIST:
             return True
-
     return False
 
 
-# 优化黑名单检查函数
 def is_domain_blocked(url: str) -> bool:
+    """检查域名是否在黑名单中"""
     domain = extract_domain(url)
+    parts = domain.split('.')
 
-    # 检查完整域名是否在黑名单
+    # 检查完整域名及所有父域名
     if domain in DOMAIN_BLACKLIST:
         return True
-
-    # 检查任何父域名是否在黑名单
-    parts = domain.split('.')
     for i in range(len(parts) - 1):
-        parent_domain = '.'.join(parts[i:])
-        if parent_domain in DOMAIN_BLACKLIST:
+        if '.'.join(parts[i:]) in DOMAIN_BLACKLIST:
             return True
-
     return False
 
 
-# 优化URL可接受性检查函数
 def is_url_acceptable(url: str) -> Tuple[bool, str]:
+    """检查URL是否符合处理条件"""
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
     ext = extract(domain)
     subdomain = ext.subdomain.lower()
 
-    # 1. 黑名单检查（最高优先级）
+    # 黑名单检查（最高优先级）
     if is_domain_blocked(url):
         return False, f"URL在黑名单中: {domain}"
 
-    # 2. 白名单检查（次高优先级）
+    # 白名单检查（次高优先级）
     if is_domain_whitelisted(url):
         return True, f"白名单域名，跳过子域名检查: {domain}"
 
-    # 3. 子域名检查（最低优先级）
-    if subdomain in ALLOWED_SUBDOMAINS:
-        return True, f"允许的子域名: {subdomain}.{ext.domain}.{ext.suffix}"
-
-    if not subdomain:
-        return True, f"标准主域名: {domain}"
+    # 子域名检查（最低优先级）
+    if subdomain in ALLOWED_SUBDOMAINS or not subdomain:
+        return True, f"允许的子域名: {subdomain}.{ext.domain}.{ext.suffix}" if subdomain else f"标准主域名: {domain}"
 
     return False, f"不符合处理条件的URL (子域名不允许: {subdomain})"
 
 
-# ============================== 文本验证与处理函数 ==============================
-def is_valid_text(text: str) -> bool:
-    """检查文本是否有效（不是乱码）"""
-    if not text:
-        return False
-
-    text = text.strip()
-    if not text:
-        return False
-
-    # 移除控制字符
-    text_clean = re.sub(r'[\x00-\x1F\x7F]', '', text)
-
-    # 定义有效字符集（中文、英文、数字、常见标点）
-    valid_chars = re.findall(
-        r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:!?()（）《》“”‘’\s]',
-        text_clean
-    )
-
-    # 有效字符占比需超过70%
-    valid_ratio = len(valid_chars) / len(text_clean) if len(text_clean) > 0 else 0
-    return valid_ratio > 0.7
-
-
-def has_chinese_text(text: str) -> bool:
-    """检查文本是否包含中文"""
-    return bool(re.search(r'[\u4e00-\u9fa5]', text))
-
-
-def is_pure_chinese(text: str) -> bool:
-    """检查文本是否为纯中文（可以包含英文标点和数字）"""
-    # 移除所有非中文字符后检查是否还有内容
-    chinese_only = re.sub(r'[^\u4e00-\u9fa5]', '', text)
-    return len(chinese_only) > 0 and not re.search(r'[a-zA-Z]', text)
-
-
-def is_pure_english(text: str) -> bool:
-    """检查文本是否为纯英文（不包含任何中文字符）"""
-    return not bool(re.search(r'[\u4e00-\u9fa5]', text))
-
-
-def clean_html_entities(text: str) -> str:
-    """清理HTML实体编码，保留单引号转换"""
-    # 替换单引号实体
-    text = text.replace('&#x27;', "'")
-    # 移除其他所有HTML实体
-    text = re.sub(r'&#x[0-9a-fA-F]+;', '', text)
-    return text
-
-
-def is_domain_like(text: str) -> bool:
-    """检查文本是否类似域名格式（包含点且点前后有字母）"""
-    # 简单的域名格式检测：包含至少一个点，点前后有字母
-    return bool(re.search(r'[a-zA-Z0-9]+\.[a-zA-Z0-9]+', text))
-
-
-def is_description_valid(desc: str) -> bool:
-    """检查描述是否有效：存在、是中文、不是乱码、不是无效值"""
-    if not desc:
-        return False
-
-    desc_clean = desc.strip()
-    if not desc_clean:
-        return False
-
-    # 检查是否为无效值
-    lower_desc = desc_clean.lower()
-    if lower_desc in ['none', '暂无描述', '无描述', 'null', '暂无藐视']:
-        return False
-
-    # 检查是否包含中文且不是乱码
-    return has_chinese_text(desc_clean) and is_valid_text(desc_clean)
-
-
-def truncate_description(desc: str) -> str:
-    """
-    根据文本类型进行智能截断：
-    - 纯中文：取冒号“：”之前的内容，遇到“！”截断并不保留“！”
-    - 纯英文：取分号“;”之前的内容，遇到“!”截断并不保留“!”
-    - 中英文混合：优先按中文标点截断
-    """
-    # 先处理特殊符号
-    desc = clean_html_entities(desc)
-
-    # 检查是否包含感叹号并截断（不保留感叹号）
-    if '!' in desc:
-        desc = desc.split('!', 1)[0].strip()
-    if '！' in desc:
-        desc = desc.split('！', 1)[0].strip()
-
-    # 纯中文处理
-    if is_pure_chinese(desc):
-        if '：' in desc:
-            return desc.split('：', 1)[0].strip()
-        # 备选截断符
-        for char in ['。', '；', '?', '？']:
-            if char in desc:
-                return desc.split(char, 1)[0].strip()
-        return desc.strip()
-
-    # 纯英文处理
-    if is_pure_english(desc):
-        if ';' in desc:
-            return desc.split(';', 1)[0].strip()
-        # 备选截断符
-        for char in ['.', '?']:
-            if char in desc:
-                return desc.split(char, 1)[0].strip()
-        return desc.strip()
-
-    # 中英文混合处理（按中文规则）
-    if '：' in desc:
-        return desc.split('：', 1)[0].strip()
-    if '。' in desc:
-        return desc.split('。', 1)[0].strip()
-    if ';' in desc:
-        return desc.split(';', 1)[0].strip()
-
-    return desc.strip()
-
-
-def normalize_punctuation(desc: str) -> str:
-    """根据文本是否包含中文统一标点符号，避免转换域名中的点"""
-    # 检查文本中是否包含类似域名的结构
-    contains_domain = is_domain_like(desc)
-
-    if has_chinese_text(desc):
-        # 有中文，使用中文标点
-        punctuation_map = {
-            ',': '，', ';': '；', ':': '：',
-            '!': '！', '?': '？', '(': '（', ')': '）',
-            '<': '《', '>': '》', '"': '“', "'": '‘'
-        }
-
-        # 如果包含域名结构，不转换英文点；否则正常转换
-        if not contains_domain:
-            punctuation_map['.'] = '。'
-    else:
-        # 纯英文，使用英文标点
-        punctuation_map = {
-            '。': '.', '，': ',', '；': ';', '：': ':',
-            '！': '!', '？': '?', '（': '(', '）': ')',
-            '《': '<', '》': '>', '“': '"', '‘': "'"
-        }
-
-    for old, new in punctuation_map.items():
-        desc = desc.replace(old, new)
-
-    return desc
-
-
-def normalize_description(desc: str) -> str:
-    """规范化描述内容：处理特殊字符、替换符号、调整空格和标点"""
-    # 1. 删除*和&amp;
-    desc = re.sub(r'[*]|&amp;', '', desc)
-
-    # 2. 替换竖线为逗号
-    desc = desc.replace('|', '，')
-
-    # 3. 把-和_替换成，
-    desc = re.sub(r'[-_]', '，', desc)
-
-    # 4. 清理逗号前后的空格
-    desc = re.sub(r'\s*，\s*', '，', desc)
-
-    # 5. 去除多余空格（连续空格转为单个）
-    desc = re.sub(r'\s+', ' ', desc).strip()
-
-    # 6. 中英文混杂时，英文/数字左右添加空格
-    # 匹配中文后面跟英文/数字的情况
-    desc = re.sub(r'([\u4e00-\u9fa5])([a-zA-Z0-9.])', r'\1 \2', desc)
-    # 匹配英文/数字后面跟中文的情况
-    desc = re.sub(r'([a-zA-Z0-9.])([\u4e00-\u9fa5])', r'\1 \2', desc)
-
-    # 7. 统一标点符号
-    desc = normalize_punctuation(desc)
-
-    return desc
-
-
-def process_description(desc: str) -> str:
-    """处理描述的完整流程：清理实体 -> 截断 -> 规范化"""
-    # 1. 清理HTML实体
-    cleaned = clean_html_entities(desc)
-    # 2. 按规则截断（包含!和！的处理）
-    truncated = truncate_description(cleaned)
-    # 3. 规范化格式
-    return normalize_description(truncated)
-
-
-# ============================== URL处理函数 ==============================
 def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """验证并处理URL格式"""
     if not url.startswith(('http://', 'https://')):
         return None, "URL缺少协议前缀"
 
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
+    # 强制使用HTTPS
     if base_url.startswith('http://'):
         base_url = base_url.replace('http://', 'https://')
 
@@ -547,14 +260,18 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+    """检查URL可访问性并处理"""
     try:
+        # 强制使用HTTPS
         if url.startswith('http://'):
             url = url.replace('http://', 'https://')
 
+        # 检查URL是否符合处理条件
         is_acceptable, reason = is_url_acceptable(url)
         if not is_acceptable:
             return False, f"URL不符合处理条件: {reason}", url, None
 
+        # 验证URL格式
         processed_url, error = validate_and_process_url(url)
         if not processed_url:
             return False, f"URL格式验证失败: {error}", url, None
@@ -567,8 +284,35 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
         return False, f"URL处理异常: {str(e)[:20]}", url, normalized
 
 
-# ============================== API请求函数 ==============================
+# ============================== 网站描述处理函数 ==============================
+def is_valid_text(text: str) -> bool:
+    """检查文本是否有效（不是乱码）"""
+    if not text or not text.strip():
+        return False
+
+    # 移除控制字符
+    text_clean = re.sub(r'[\x00-\x1F\x7F]', '', text)
+    if not text_clean:
+        return False
+
+    # 定义有效字符集（中文、英文、数字、常见标点）
+    valid_chars = re.findall(
+        r'[\u4e00-\u9fa5a-zA-Z0-9，。,.;:!?()（）《》“”‘’\s]',
+        text_clean
+    )
+
+    # 有效字符占比需超过70%
+    return len(valid_chars) / len(text_clean) > 0.7
+
+
+def clean_html_entities(text: str) -> str:
+    """清理HTML实体编码，保留单引号转换"""
+    text = text.replace('&#x27;', "'")  # 保留单引号
+    return re.sub(r'&#x[0-9a-fA-F]+;', '', text)  # 移除其他实体
+
+
 def fetch_api(api, url: str) -> Optional[str]:
+    """调用API获取网站描述"""
     try:
         encoded_url = quote(url)
         api_url = api['url_template'].format(encoded_url)
@@ -580,147 +324,125 @@ def fetch_api(api, url: str) -> Optional[str]:
             allow_redirects=False
         )
         response.raise_for_status()
-        data = response.json()
+        return api['parse_func'](response.json())
 
-        return api['parse_func'](data)
-
-    except Exception as e:
+    except Exception:
         return None
 
 
 def fetch_website_description(url: str) -> Optional[str]:
+    """通过多个API获取网站描述"""
     if not url:
         return None
 
-    invalid_descriptions = {
-        "未找到描述", "null", "暂无描述", "无描述", "暂无藐视"
-    }
-
+    invalid_descriptions = {"未找到描述", "null", "暂无描述", "无描述", "暂无藐视"}
     api_list = [
         {
             "name": "geeker",
             "url_template": "https://geeker.moe/tdk.php?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('description', ''))
-                    and data.get('code') == 1
-                    and desc.strip()
-                    and desc not in invalid_descriptions
-                    and is_valid_text(desc)
-            else None
+            "parse_func": lambda data: desc if (desc := data.get('description', ''))
+                                               and data.get('code') == 1 and desc.strip()
+                                               and desc not in invalid_descriptions and is_valid_text(desc) else None
         },
         {
             "name": "shanhe",
             "url_template": "https://shanhe.kim/api/wz/web_tdk.php?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('description', ''))
-                    and data.get('code') == 1
-                    and is_valid_text(desc)
-            else None
+            "parse_func": lambda data: desc if (desc := data.get('description', ''))
+                                               and data.get('code') == 1 and is_valid_text(desc) else None
         },
         {
             "name": "suol",
             "url_template": "https://api.suol.cc/v1/zs_wzxx.php?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('description', ''))
-                    and data.get('code') == 1
-                    and is_valid_text(desc)
-            else None
+            "parse_func": lambda data: desc if (desc := data.get('description', ''))
+                                               and data.get('code') == 1 and is_valid_text(desc) else None
         },
         {
             "name": "ahfi",
             "url_template": "https://api.ahfi.cn/api/websiteinfo?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('data', {}).get('description', ''))
-                    and desc.strip()
-                    and desc not in invalid_descriptions
-                    and is_valid_text(desc)
-            else None
-        },
-        {
-            "name": "yilianshuju",
-            "url_template": "https://www.yilianshuju.com/api/?id=17&key=4ln9pr1ur5nlzgssaipcxdkacx7&url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('data', {}).get('description', ''))
-                    and data.get('code') == 200
-                    and desc.strip()
-                    and desc not in invalid_descriptions
-                    and is_valid_text(desc)
-            else None
-        },
-        {
-            "name": "qlwc",
-            "url_template": "https://api.qlwc.cn/api/tdk?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('description', ''))
-                    and data.get('code') == 200
-                    and desc.strip()
-                    and desc not in invalid_descriptions
-                    and is_valid_text(desc)
-            else None
-        },
-        {
-            "name": "xxapi",
-            "url_template": "https://v2.xxapi.cn/api/title?url={}",
-            "parse_func": lambda data:
-            desc if (desc := data.get('data', ''))
-                    and is_valid_text(desc)
-            else None
+            "parse_func": lambda data: desc if (desc := data.get('data', {}).get('description', ''))
+                                               and desc.strip() and desc not in invalid_descriptions and is_valid_text(
+                desc) else None
         }
     ]
 
-    # 优先选择包含中文的API结果
-    chinese_results = []
-    other_results = []
-
+    # 尝试所有API获取描述
     for api in api_list:
         try:
-            website_desc = fetch_api(api, url)
-            if website_desc:
-                website_desc = website_desc.strip().replace('\n', ' ').replace('\r', ' ')
-                if website_desc:
-                    if has_chinese_text(website_desc):
-                        chinese_results.append(website_desc)
-                    else:
-                        other_results.append(website_desc)
-        except Exception as e:
+            if website_desc := fetch_api(api, url):
+                return website_desc.strip().replace('\n', ' ').replace('\r', ' ')
+        except Exception:
             continue
-
-    # 优先返回中文结果，没有则返回其他结果
-    if chinese_results:
-        return chinese_results[0]
-    elif other_results:
-        return other_results[0]
 
     return None
 
 
+def ask_openai(question: str) -> Optional[str]:
+    """调用AI接口生成描述（带重试机制）"""
+    # 定义消息类型
+    system_msg: ChatCompletionSystemMessageParam = {
+        "role": "system",
+        "content": "我会给你一个网址和网站描述，优先通过网址帮我生成网站收藏的简短中文描述，长度控制在100字符（varchar）内，越短越好末尾不需要标点符号，直接发送给我描述即可"
+    }
+
+    user_msg: ChatCompletionUserMessageParam = {
+        "role": "user",
+        "content": question
+    }
+
+    messages: List[ChatCompletionMessageParam] = [system_msg, user_msg]
+
+    # 带指数退避的重试机制
+    for attempt in range(1, AI_CONFIG["max_retries"] + 1):
+        try:
+            response = ai_client.chat.completions.create(
+                model=AI_CONFIG["model"],
+                messages=messages,
+                temperature=AI_CONFIG["temperature"],
+                max_tokens=AI_CONFIG["max_tokens"]
+            )
+
+            result = response.choices[0].message.content.strip()
+            return result if result != "不知道" else None
+
+        except Exception as e:
+            logger.warning(f"AI调用失败 (尝试 {attempt}/{AI_CONFIG['max_retries']}): {str(e)}")
+            if attempt < AI_CONFIG["max_retries"]:
+                time.sleep(AI_CONFIG["retry_delay"] * attempt)
+
+    logger.error(f"AI调用超过最大重试次数 ({AI_CONFIG['max_retries']}次)，放弃请求")
+    return None
+
+
 def clean_description(url: str, original_desc: str = "") -> Optional[str]:
-    # 1. 优先检查并使用原始描述
-    if is_description_valid(original_desc):
-        processed = process_description(original_desc)
-        if processed:
-            return processed
+    """清理并优化网站描述（结合API和AI）"""
+    # 清理原始描述
+    cleaned_original = clean_html_entities(original_desc) if original_desc else ""
 
-    # 2. 原始描述无效，尝试API获取
+    # 尝试通过API获取描述
     api_desc = fetch_website_description(url)
-    if api_desc:
-        processed = process_description(api_desc)
-        if processed:
-            return processed
+    domain = extract_domain(url)
 
-    # 3. 检查URL是否在白名单或使用允许的子域名
-    is_acceptable, _ = is_url_acceptable(url)
-    if not is_acceptable:
-        logger.warning(f"描述获取失败且URL不在白名单/允许的子域名中，丢弃URL: {url}")
+    # 处理API获取到的描述
+    if api_desc:
+        if ai_desc := ask_openai(f"网站描述：{api_desc}\n网址：{domain}"):
+            return ai_desc
+        logger.warning(f"API获取到描述但AI处理失败，丢弃URL: {url}")
         return None
 
-    # 4. 白名单但无有效描述
-    logger.warning(f"原始描述无效且API获取描述失败，丢弃URL: {url}")
+    # 白名单域名直接调用AI
+    if is_domain_whitelisted(url):
+        if ai_desc := ask_openai(f"网址：{domain}"):
+            return ai_desc
+        logger.warning(f"白名单域名但AI调用失败，丢弃URL: {url}")
+        return None
+
+    # 非白名单且无API描述则丢弃
     return None
 
 
 # ============================== 图像处理函数 ==============================
 def compress_svg(svg_content: str) -> str:
+    """压缩SVG内容，移除注释和多余空格"""
     try:
         svg_content = re.sub(r'<!--.*?-->', '', svg_content, flags=re.DOTALL)
         lines = []
@@ -735,45 +457,44 @@ def compress_svg(svg_content: str) -> str:
 
 
 def image_to_svg(img_response: requests.Response) -> str:
+    """将图片转换为SVG格式"""
     try:
         img = Image.open(io.BytesIO(img_response.content))
         img_base64 = b64encode(img_response.content).decode('utf-8')
-
-        svg_template = """<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">
-            <image href="data:image/{};base64,{}" width="{}" height="{}" preserveAspectRatio="xMidYMid meet"/>
-        </svg>"""
 
         content_type = img_response.headers.get('Content-Type', 'png')
         img_format = content_type.split('/')[-1].lower()
         if img_format not in ['png', 'jpeg', 'jpg', 'gif']:
             img_format = 'png'
 
-        svg_content = svg_template.format(
-            img.width, img.height, img_format, img_base64, img.width, img.height
-        )
+        svg_template = """<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">
+            <image href="data:image/{};base64,{}" width="{}" height="{}" preserveAspectRatio="xMidYMid meet"/>
+        </svg>"""
 
-        return compress_svg(svg_content)
+        return compress_svg(svg_template.format(
+            img.width, img.height, img_format, img_base64, img.width, img.height
+        ))
     except Exception as e:
         logger.error(f"图片转换失败: {e}")
         raise ValueError(f"图片转换失败: {e}")
 
 
 def validate_svg(svg_content: str) -> bool:
+    """验证SVG内容有效性"""
     return all(tag in svg_content for tag in ['<svg', '</svg>', '<image'])
 
 
-def download_and_save_image(img_src: str, filename: str, max_retries: int, initial_delay: int) -> Tuple[bool, str]:
-    """下载并保存图片，支持自动重试"""
-    for attempt in range(1, max_retries + 1):
+def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
+    """下载并保存图片（带重试机制）"""
+    for attempt in range(1, MAX_IMAGE_RETRIES + 1):
         try:
+            # 强制使用HTTPS
             if img_src.startswith('http://'):
                 img_src = img_src.replace('http://', 'https://')
 
-            # 记录图片下载尝试
-            if attempt > 1:
-                logger.info(f"重试下载图片 (尝试 {attempt}/{max_retries}): {img_src}")
-            else:
-                logger.info(f"开始下载图片: {img_src}")
+            # 记录下载尝试
+            log_msg = f"重试下载图片 (尝试 {attempt}/{MAX_IMAGE_RETRIES}): {img_src}" if attempt > 1 else f"开始下载图片: {img_src}"
+            logger.info(log_msg)
 
             img_response = requests.get(
                 img_src,
@@ -785,43 +506,39 @@ def download_and_save_image(img_src: str, filename: str, max_retries: int, initi
 
             file_path = os.path.join(ICON_DIRECTORY, filename)
 
+            # 处理SVG文件
             if img_src.lower().endswith('.svg'):
                 svg_content = compress_svg(img_response.text)
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(svg_content)
-                logger.info(f"SVG图片保存成功: {filename}")
                 return True, "SVG已压缩保存"
-            else:
-                svg_content = image_to_svg(img_response)
-                if validate_svg(svg_content):
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(svg_content)
-                    logger.info(f"图片转换并保存为SVG: {filename}")
-                    return True, "已转换为SVG"
-                else:
-                    logger.warning(f"生成的SVG文件无效: {filename}")
-                    if attempt == max_retries:
-                        return False, "生成的SVG文件无效"
-                    else:
-                        # 无效SVG也进行重试
-                        time.sleep(initial_delay * attempt)
-                        continue
+
+            # 处理其他图片格式
+            svg_content = image_to_svg(img_response)
+            if validate_svg(svg_content):
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(svg_content)
+                return True, "已转换为SVG"
+
+            # 无效SVG处理
+            logger.warning(f"生成的SVG文件无效: {filename}")
+            if attempt == MAX_IMAGE_RETRIES:
+                return False, "生成的SVG文件无效"
+            time.sleep(INITIAL_RETRY_DELAY * attempt)
 
         except Exception as e:
-            error_msg = f"图片下载失败 (尝试 {attempt}/{max_retries}) {img_src}: {str(e)}"
+            error_msg = f"图片下载失败 (尝试 {attempt}/{MAX_IMAGE_RETRIES}) {img_src}: {str(e)}"
             logger.warning(error_msg)
 
-            # 如果不是最后一次尝试，等待后重试
-            if attempt < max_retries:
-                delay = initial_delay * attempt  # 指数退避策略
-                time.sleep(delay)
+            if attempt < MAX_IMAGE_RETRIES:
+                time.sleep(INITIAL_RETRY_DELAY * attempt)  # 指数退避
 
-    # 所有重试都失败
-    return False, f"超过最大重试次数 ({max_retries}次)"
+    return False, f"超过最大重试次数 ({MAX_IMAGE_RETRIES}次)"
 
 
 # ============================== 文件操作函数 ==============================
 def clear_directory(directory: str) -> None:
+    """清理目录（删除所有文件），如果目录不存在则创建"""
     if os.path.exists(directory):
         for filename in os.listdir(directory):
             file_path = os.path.join(directory, filename)
@@ -836,6 +553,7 @@ def clear_directory(directory: str) -> None:
 
 
 def save_file(content: str, file_path: str) -> None:
+    """保存内容到文件"""
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -850,6 +568,7 @@ def generate_filename(
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ) -> Tuple[Optional[str], Optional[str]]:
+    """生成唯一的图标文件名，处理域名冲突"""
     url_without_slash = url.rstrip('/')
     ext = extract(url_without_slash)
 
@@ -860,7 +579,6 @@ def generate_filename(
     is_www = subdomain == "www"
     is_allowed_subdomain = subdomain in ALLOWED_SUBDOMAINS
     is_main_domain = subdomain in ("", "www")
-
     base_key = main_domain if is_main_domain else f"{subdomain}-{main_domain}"
 
     with lock:
@@ -868,16 +586,20 @@ def generate_filename(
             if base_key in processed_domains:
                 existing = processed_domains[base_key]
 
+                # 已存在www版本，丢弃非www版本
                 if existing.get("is_www", False) and not is_www:
                     return None, f"主域名{main_domain}已存在www前缀版本，当前域名被丢弃"
 
+                # 后缀相同，使用现有文件名
                 if existing["suffix"] == suffix:
                     return existing["filename"], None
 
+                # 处理不同后缀的情况
                 old_filename = existing["filename"]
                 old_suffix = existing["suffix"]
                 new_existing_filename = f"{main_domain}-{old_suffix}.svg"
 
+                # 重命名现有文件
                 try:
                     old_path = os.path.join(ICON_DIRECTORY, old_filename)
                     new_path = os.path.join(ICON_DIRECTORY, new_existing_filename)
@@ -886,14 +608,15 @@ def generate_filename(
                     logger.error(f"重命名文件失败: {old_filename} → {new_existing_filename}, 错误: {e}")
                     return None, "文件重命名失败"
 
+                # 更新已有数据的文件名
                 for item in processed_data:
                     if item.local_filename == old_filename:
                         item.local_filename = new_existing_filename
                         break
 
+                # 记录新文件名
                 existing["filename"] = new_existing_filename
                 existing["suffix"] = old_suffix
-
                 new_filename = f"{main_domain}-{suffix}.svg"
                 processed_domains[base_key] = {
                     "filename": new_filename,
@@ -903,6 +626,7 @@ def generate_filename(
                 }
                 return new_filename, f"主域名相同但后缀不同，新文件名为{new_filename}"
 
+            # 首次处理主域名
             filename = f"{main_domain}.svg"
             processed_domains[base_key] = {
                 "filename": filename,
@@ -915,10 +639,10 @@ def generate_filename(
         elif is_allowed_subdomain:
             if base_key in processed_domains:
                 existing = processed_domains[base_key]
-
                 if existing["suffix"] == suffix:
                     return existing["filename"], None
 
+                # 不同后缀的子域名
                 new_filename = f"{subdomain}-{main_domain}-{suffix}.svg"
                 processed_domains[base_key] = {
                     "filename": new_filename,
@@ -928,6 +652,7 @@ def generate_filename(
                 }
                 return new_filename, f"允许的子域名，前缀相同但后缀不同，文件名为{new_filename}"
 
+            # 首次处理允许的子域名
             filename = f"{subdomain}-{main_domain}.svg"
             processed_domains[base_key] = {
                 "filename": filename,
@@ -938,7 +663,7 @@ def generate_filename(
             return filename, f"首次处理允许的子域名 {subdomain}，文件名为{filename}"
 
         else:
-            # 白名单域名即使子域名不在允许列表也应通过
+            # 白名单域名特殊处理
             if is_domain_whitelisted(url):
                 filename = f"{subdomain}-{main_domain}.svg"
                 processed_domains[base_key] = {
@@ -952,6 +677,7 @@ def generate_filename(
 
 
 def expand_color_format(color: str) -> str:
+    """标准化颜色格式（3位HEX转6位）"""
     if not color:
         return ''
 
@@ -963,31 +689,32 @@ def expand_color_format(color: str) -> str:
         return f"#{color[0]}{color[0]}{color[1]}{color[1]}{color[2]}{color[2]}"
     elif len(color) == 6:
         return f"#{color}"
-    else:
-        return color
+    return color
 
 
-# ============================== 分类与URL处理函数 ==============================
+# ============================== 核心处理函数 ==============================
 def process_url(
         item,
-        category,
-        processed_normalized_urls,
-        processed_domains,
-        processed_data,
-        lock,
-        max_image_retries: int,
-        initial_retry_delay: int
+        category: str,
+        processed_normalized_urls: Set[str],
+        processed_domains: Dict[str, Dict[str, str]],
+        processed_data: List[WebsiteData],
+        lock: threading.Lock
 ):
+    """处理单个URL，包括验证、去重、描述生成和图标下载"""
+    # 验证名称
     name = item.get('name', '').strip()
     if not name:
         logger.warning("丢弃name为空的条目")
         return
 
+    # 提取基础信息
     url = item.get('url', '')
     img_src = item.get('imgSrc', '')
     background_color = item.get('backgroundColor', '')
     original_description = item.get('description', '')
 
+    # 检查URL可访问性
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
     if not accessible:
         logger.warning(f"不可处理URL: {url} - {error}")
@@ -997,33 +724,32 @@ def process_url(
         logger.warning(f"无法标准化URL: {final_url}")
         return
 
+    # 检查重复URL
     with lock:
         if normalized_url in processed_normalized_urls:
-            return  # 简化重复URL的提示
+            return
 
+    # 处理描述
     clean_desc = clean_description(final_url, original_description)
     if not clean_desc:
         return
 
+    # 处理颜色
     expanded_color = expand_color_format(background_color)
 
+    # 生成文件名
     filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data, lock)
-
     if filename is None:
         logger.info(f"URL被丢弃: {final_url} - {conflict_msg}")
         return
 
-    # 尝试下载图片，带重试机制
-    success, status = download_and_save_image(
-        img_src,
-        filename,
-        max_image_retries,
-        initial_retry_delay
-    )
+    # 下载并保存图片
+    success, status = download_and_save_image(img_src, filename)
     if not success:
         logger.warning(f"图片最终下载失败，丢弃条目: {url} - {status}")
         return
 
+    # 保存处理结果
     with lock:
         processed_normalized_urls.add(normalized_url)
         domain = extract(final_url.rstrip('/'))
@@ -1042,7 +768,8 @@ def process_url(
         ))
 
 
-def process_category(category, url_queue, lock):
+def process_category(category: str, url_queue: list, lock: threading.Lock):
+    """获取指定分类的所有URL并加入处理队列"""
     logger.info(f"开始获取分类[{category}]的URL")
     base_url = 'https://api.codelife.cc/website/list'
     lang = 'zh'
@@ -1062,10 +789,12 @@ def process_category(category, url_queue, lock):
             response.raise_for_status()
             data = response.json()
 
+            # 没有更多数据时退出
             if not data.get('data', []):
                 logger.info(f"分类[{category}]的URL获取完成")
                 break
 
+            # 添加到队列
             with lock:
                 for item in data['data']:
                     if item.get('url', '').startswith('http://'):
@@ -1073,7 +802,7 @@ def process_category(category, url_queue, lock):
                     url_queue.append((item, category))
 
             page += 1
-            time.sleep(1 + random.uniform(0, 1))
+            time.sleep(1 + random.uniform(0, 1))  # 随机延迟避免请求过于频繁
 
         except Exception as e:
             logger.error(f"分类[{category}]第{page}页URL获取失败: {e}")
@@ -1082,7 +811,8 @@ def process_category(category, url_queue, lock):
 
 
 def generate_sql_statements(websites: List[WebsiteData]) -> str:
-    # 先按area(分类ID)升序，再按name升序排序
+    """生成SQL导入语句"""
+    # 按分类ID和名称排序
     sorted_websites = sorted(
         websites,
         key=lambda x: (CATEGORY_IDS.get(x.category, 15), x.name)
@@ -1093,24 +823,24 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
 
     for site in sorted_websites:
         normalized = normalize_url(site.url)
-
         if normalized in seen_normalized_urls:
             logger.warning(f"生成SQL时发现重复URL，已跳过: {site.url}")
             continue
 
         seen_normalized_urls.add(normalized)
 
+        # 转义SQL特殊字符
         escaped_name = site.name.replace("'", "''")
         escaped_description = site.description.replace("'", "''")
 
+        # 提取域名
         domain_parts = extract(site.url.rstrip('/'))
-        if domain_parts.subdomain:
-            domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}"
-        else:
-            domain = domain_parts.registered_domain
+        domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}" if domain_parts.subdomain else domain_parts.registered_domain
 
+        # 获取分类ID
         category_id = CATEGORY_IDS.get(site.category, 15)
 
+        # 生成SQL语句
         sql = (
             f"INSERT INTO `mtab`.`linkstore` "
             f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
@@ -1120,10 +850,108 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
             f"'icon', '1x1', '2025-01-01 00:00:00', 0, {category_id}, '{escaped_description}', '{domain}', "
             f"0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"
         )
-
         sql_statements.append(sql)
 
     return "\n".join(sql_statements)
+
+
+# ============================== 主函数 ==============================
+def main() -> None:
+    """程序主入口"""
+    logger.info("\n" + "=" * 60)
+    logger.info("开始执行mTab多分类网站书签导出工具")
+    logger.info("=" * 60 + "\n")
+
+    # 显示配置信息
+    logger.info(f"URL处理线程数量: {MAX_WORKERS}")
+    logger.info(f"AI模型: {AI_CONFIG['model']}")
+    logger.info(f"AI最大重试次数: {AI_CONFIG['max_retries']}")
+    logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
+    logger.info(f"处理分类数量: {len(CATEGORIES)}")
+    logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
+    logger.info(f"域名白名单数量: {len(DOMAIN_WHITELIST)}\n")
+
+    # 初始化数据结构
+    clear_directory(ICON_DIRECTORY)
+    processed_data: List[WebsiteData] = []
+    processed_normalized_urls: Set[str] = set()
+    processed_domains: Dict[str, Dict[str, str]] = {}
+    url_queue = []  # 存储所有待处理的URL任务
+    queue_lock = threading.Lock()  # 队列操作锁
+    data_lock = threading.Lock()  # 数据操作锁
+
+    # 第一步：多线程获取所有分类的URL
+    logger.info("===== 开始收集所有分类的URL =====")
+    with ThreadPoolExecutor(max_workers=min(len(CATEGORIES), 2)) as category_executor:
+        futures = [
+            category_executor.submit(process_category, category, url_queue, queue_lock)
+            for category in CATEGORIES
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"分类URL获取线程出错: {e}")
+
+    logger.info(f"\n共收集到 {len(url_queue)} 个URL待处理\n")
+
+    # 第二步：多线程处理所有URL
+    logger.info("===== 开始多线程处理URL =====")
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as url_executor:
+        pbar = tqdm(total=len(url_queue), desc="处理URL进度")
+
+        def process_with_progress(item, category):
+            # 处理名称中的'-'截断
+            if 'name' in item and '-' in item['name']:
+                item['name'] = item['name'].split('-', 1)[0]
+            process_url(item, category, processed_normalized_urls, processed_domains, processed_data, data_lock)
+            pbar.update(1)
+
+        futures = [
+            url_executor.submit(process_with_progress, item, category)
+            for item, category in url_queue
+        ]
+
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"URL处理线程出错: {e}")
+
+        pbar.close()
+
+    # 后续处理与结果展示
+    logger.info("\n" + "=" * 60)
+    logger.info(f"所有URL处理完成，共获取 {len(processed_data)} 条不重复数据")
+    logger.info("=" * 60 + "\n")
+
+    if processed_data:
+        # 分类统计
+        print("\n按分类统计:")
+        category_counts = Counter(item.category for item in processed_data)
+        for cat, count in category_counts.items():
+            print(f"- {cat}: {count} 条")
+
+        # 数据示例
+        print("\n前5条数据示例:")
+        for i, item in enumerate(processed_data[:5], 1):
+            print(f"{i}. [{item.category}] {item.name}")
+            print(f"   URL: {item.url}")
+            print(f"   描述: {item.description}")
+            print(f"   本地文件: {item.local_filename}\n")
+
+        # 生成SQL文件
+        sql_content = generate_sql_statements(processed_data)
+        save_file(sql_content, SQL_OUTPUT_FILE)
+
+        print(f"\nSQL导入文件已生成: {SQL_OUTPUT_FILE}")
+        print(f"包含 {len(sql_content.split('INSERT')) - 1} 条INSERT语句")
+    else:
+        logger.warning("未处理任何数据")
+
+    logger.info("\n" + "=" * 60)
+    logger.info("mTab多分类网站书签导出工具执行完成")
+    logger.info("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
