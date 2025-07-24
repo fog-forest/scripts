@@ -38,53 +38,8 @@ DOMAIN_BLACKLIST = {
     "trae.cn", "trae.ai", "js.design", "itab.link", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
-    "qq.com", "google.com", "github.com", "youtube.com",
+    "x.com", "qq.com", "google.com", "github.com", "youtube.com",
     "www.iqiyi.com", "yiyan.baidu.com", "outlook.live.com"
-}
-ALLOWED_SUBDOMAINS = {
-    # 核心访问类
-    "www", "web", "site", "portal", "main", "homepage", "index",
-    "central", "hub", "root", "base", "primary", "entry", "gateway",
-    # 内容创作与展示类
-    "article", "author", "blog", "column", "content",
-    "doc", "docs", "draft", "file", "guide", "help", "hint",
-    "library", "manual", "note", "notes", "page", "paper", "press",
-    "read", "story", "tutorial", "wiki", "book", "booklet",
-    # 交互社区类
-    "chat", "club", "community", "comment", "conversation",
-    "discussion", "forum", "group",
-    "message", "post", "reply", "social", "talk", "thread",
-    "bbs", "board", "bulletin",
-    # 功能服务类
-    "account", "admin", "api", "app", "auth", "service",
-    "dev", "developer", "edit", "editor", "function", "login",
-    "manage", "manager", "member", "profile", "register", "setting",
-    "tool", "tools", "user", "users",
-    # 通信与联系类
-    "contact", "customer", "email", "feedback",
-    "mail", "message", "msg", "notify", "notification",
-    "support", "subscribe",
-    # 资源存储与分发类
-    "archive", "asset", "cdn", "cloud",
-    "data", "database", "drive", "file", "files",
-    "image", "images", "img", "media", "pan", "pic", "pics",
-    "storage", "store", "video", "videos", "yun", "photo",
-    # 设备与平台类
-    "android", "applet", "client", "console",
-    "device", "desktop", "ios", "mobile", "pad", "pc",
-    "server", "system", "tablet",
-    # 场景与环境类
-    "beta", "cloud", "dev",
-    "home", "lab", "local", "live",
-    "office", "online", "prod",
-    "staging", "test",
-    # 业务场景类
-    "bank", "buy", "class", "course", "edu", "education",
-    "game", "games", "learn", "location", "map", "market",
-    "pay", "sale", "sell", "shop", "store", "stream",
-    "ticket", "video", "watch",
-    # 其他
-    "china", "usa"
 }
 
 # 网络请求配置
@@ -248,24 +203,10 @@ def is_domain_blocked(url: str) -> bool:
 
 def is_url_acceptable(url: str) -> Tuple[bool, str]:
     """检查URL是否符合处理条件"""
-    parsed = urlparse(url)
-    domain = parsed.netloc.lower()
-    ext = extract(domain)
-    subdomain = ext.subdomain.lower()
-
-    # 黑名单检查（最高优先级）
+    # 只检查黑名单，移除子域名检查逻辑
     if is_domain_blocked(url):
-        return False, f"URL在黑名单中: {domain}"
-
-    # 白名单检查（次高优先级）
-    if is_domain_whitelisted(url):
-        return True, f"白名单域名，跳过子域名检查: {domain}"
-
-    # 子域名检查（最低优先级）
-    if subdomain in ALLOWED_SUBDOMAINS or not subdomain:
-        return True, f"允许的子域名: {subdomain}.{ext.domain}.{ext.suffix}" if subdomain else f"标准主域名: {domain}"
-
-    return False, f"不符合处理条件的URL (子域名不允许: {subdomain})"
+        return False, f"URL在黑名单中: {extract_domain(url)}"
+    return True, "URL符合处理条件"
 
 
 def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
@@ -410,23 +351,7 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
             return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
 
         except requests.exceptions.SSLError:
-            # HTTPS证书错误，尝试用HEAD请求验证
-            logger.info(f"HTTPS证书错误，尝试HEAD请求验证: {current_url}")
-            try:
-                # 发送HEAD请求验证，不验证证书
-                head_response = requests.head(
-                    current_url,
-                    headers=HTTP_CONFIG['headers'],
-                    timeout=HTTP_CONFIG['timeout'],
-                    allow_redirects=False,
-                    verify=False  # 不验证证书
-                )
-                # 如果HEAD请求成功，说明服务器可访问，继续处理
-                logger.info(f"HEAD请求验证成功，忽略证书错误: {current_url}")
-                return current_url, 200, "HTTPS证书错误但HEAD请求验证成功", redirect_history
-            except Exception as e:
-                # HEAD请求也失败，确认无法访问
-                return current_url, 495, "HTTPS证书错误", redirect_history
+            return current_url, 495, "HTTPS证书错误", redirect_history
         except Exception as e:
             return current_url, 500, f"请求错误: {str(e)}", redirect_history
 
@@ -608,7 +533,7 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
     system_msg: ChatCompletionSystemMessageParam = {
         "role": "system",
         "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题和中文描述。"
-                   "1. 标题要求简短最好一个词，优先从我给你的标题中取；"
+                   "1. 标题要求简短最好一个词，优先从我给你的标题中取，不要翻译；"
                    "2. 描述长度控制在120字符（varchar）内，尽量精简，末尾不需要标点符号；"
                    "返回给我内容要求两个字段 title、description 的JSON格式。"
     }
@@ -693,7 +618,20 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
         logger.warning(f"白名单域名但AI调用失败，丢弃URL: {url}")
         return None
 
-    # 非白名单且无API信息则丢弃
+    # 只要有原始标题或描述，就尝试使用AI处理
+    if cleaned_original_title or cleaned_original_desc:
+        prompt = f"网址：{domain}"
+        if cleaned_original_title:
+            prompt += f"\n网站标题：{cleaned_original_title}"
+        if cleaned_original_desc:
+            prompt += f"\n网站描述：{cleaned_original_desc}"
+
+        if ai_info := ask_openai(prompt):
+            return ai_info
+        logger.warning(f"有原始信息但AI调用失败，丢弃URL: {url}")
+        return None
+
+    # 没有API信息且非白名单，也没有原始信息则丢弃
     return None
 
 
@@ -834,7 +772,6 @@ def generate_filename(
     suffix = ext.suffix.lower()
 
     is_www = subdomain == "www"
-    is_allowed_subdomain = subdomain in ALLOWED_SUBDOMAINS
     is_main_domain = subdomain in ("", "www")
     base_key = main_domain if is_main_domain else f"{subdomain}-{main_domain}"
 
@@ -893,7 +830,8 @@ def generate_filename(
             }
             return filename, f"首次处理主域名，文件名为{filename}"
 
-        elif is_allowed_subdomain:
+        else:
+            # 非主域名情况，处理子域名
             if base_key in processed_domains:
                 existing = processed_domains[base_key]
                 if existing["suffix"] == suffix:
@@ -907,9 +845,9 @@ def generate_filename(
                     "is_www": False,
                     "base_key": base_key
                 }
-                return new_filename, f"允许的子域名，前缀相同但后缀不同，文件名为{new_filename}"
+                return new_filename, f"子域名，前缀相同但后缀不同，文件名为{new_filename}"
 
-            # 首次处理允许的子域名
+            # 首次处理子域名
             filename = f"{subdomain}-{main_domain}.svg"
             processed_domains[base_key] = {
                 "filename": filename,
@@ -917,20 +855,7 @@ def generate_filename(
                 "is_www": False,
                 "base_key": base_key
             }
-            return filename, f"首次处理允许的子域名 {subdomain}，文件名为{filename}"
-
-        else:
-            # 白名单域名特殊处理
-            if is_domain_whitelisted(url):
-                filename = f"{subdomain}-{main_domain}.svg"
-                processed_domains[base_key] = {
-                    "filename": filename,
-                    "suffix": suffix,
-                    "is_www": False,
-                    "base_key": base_key
-                }
-                return filename, f"白名单域名，特殊处理子域名 {subdomain}，文件名为{filename}"
-            return None, f"不允许的子域名 {subdomain}，URL被丢弃"
+            return filename, f"首次处理子域名 {subdomain}，文件名为{filename}"
 
 
 def expand_color_format(color: str) -> str:
@@ -1132,7 +1057,7 @@ def main() -> None:
     logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
     logger.info(f"处理分类数量: {len(CATEGORIES)}")
     logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
-    logger.info(f"域名白名单数量: {len(DOMAIN_WHITELIST)}\n")
+    logger.info("\n")
 
     # 初始化数据结构
     clear_directory(ICON_DIRECTORY)
