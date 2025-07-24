@@ -35,11 +35,11 @@ CATEGORY_IDS = {
 
 # 域名过滤配置
 DOMAIN_BLACKLIST = {
-    "trae.cn", "trae.ai", "js.design", "zenvideo.qq.com"
+    "trae.cn", "trae.ai", "js.design", "itab.link", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
     "qq.com", "google.com", "github.com", "youtube.com",
-    "yiyan.baidu.com", "outlook.live.com"
+    "www.iqiyi.com", "yiyan.baidu.com", "outlook.live.com"
 }
 ALLOWED_SUBDOMAINS = {
     # 核心访问类
@@ -607,7 +607,10 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
     # 定义消息类型
     system_msg: ChatCompletionSystemMessageParam = {
         "role": "system",
-        "content": "我会给你一个网址、网站标题和网站描述，优先通过网址帮我生成网站收藏的简短标题和简短中文描述，标题尽量在一个词，描述长度控制在100字符（varchar）内，越短越好末尾不需要标点符号，返回两个字段title、description的JSON格式给我"
+        "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题和中文描述。"
+                   "1. 标题要求简短最好一个词，优先从我给你的标题中取；"
+                   "2. 描述长度控制在120字符（varchar）内，尽量精简，末尾不需要标点符号；"
+                   "返回给我内容要求两个字段 title、description 的JSON格式。"
     }
 
     user_msg: ChatCompletionUserMessageParam = {
