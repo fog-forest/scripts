@@ -38,7 +38,7 @@ DOMAIN_BLACKLIST = {
     "trae.cn", "trae.ai", "js.design", "itab.link", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
-    "x.com", "qq.com", "google.com", "github.com", "youtube.com",
+    "x.com", "qq.com", "google.com", "github.com", "youtube.com", "facebook.com",
     "www.iqiyi.com", "yiyan.baidu.com", "outlook.live.com"
 }
 
