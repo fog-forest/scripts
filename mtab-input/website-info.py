@@ -23,14 +23,14 @@ AI_CONFIG = {
 
 # 分类配置
 CATEGORIES = [
-    "hot", "ai", "app", "news", "music", "tech", "photos", "life", "education",
+    "ai", "app", "news", "music", "tech", "photos", "life", "education",
     "entertainment", "shopping", "social", "read", "sports", "finance", "others"
 ]
 CATEGORY_IDS = {
-    "hot": 1, "ai": 2, "app": 2, "news": 3, "music": 4,
-    "tech": 5, "photos": 6, "life": 7, "education": 8,
-    "entertainment": 9, "shopping": 10, "social": 11, "read": 12,
-    "sports": 13, "finance": 14, "others": 15
+    "ai": 1, "app": 1, "news": 2, "music": 3,
+    "tech": 4, "photos": 5, "life": 6, "education": 9,
+    "entertainment": 8, "shopping": 9, "social": 10, "read": 11,
+    "sports": 12, "finance": 13, "others": 14
 }
 
 # 域名过滤配置
