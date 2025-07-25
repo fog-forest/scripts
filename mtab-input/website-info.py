@@ -109,7 +109,7 @@ from tqdm import tqdm
 @dataclass
 class WebsiteData:
     name: str  # 网站名称（AI生成）
-    url: str  # 网站URL
+    url: str  # 网站URL（小写处理后）
     description: str  # 网站描述（AI生成）
     img_src: str  # 图标原始URL
     local_filename: str  # 本地存储的图标文件名
@@ -159,65 +159,71 @@ logger = setup_logger()
 
 # ============================== URL处理工具函数 ==============================
 def normalize_url(url: str) -> str:
-    """标准化URL格式"""
+    """标准化URL格式并转换为小写"""
     parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip('/')
+    # 对URL各部分进行小写处理
+    normalized = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path}".rstrip('/')
+    return normalized
 
 
 def extract_domain(url: str) -> str:
-    """提取URL中的域名"""
+    """提取URL中的域名（小写）"""
     parsed = urlparse(url)
     return parsed.netloc.lower()
 
 
 def is_domain_whitelisted(url: str) -> bool:
-    """检查域名是否在白名单中"""
+    """检查域名是否在白名单中（使用小写域名检查）"""
     ext = extract(url)
     domain_parts = [part for part in [ext.subdomain, ext.domain, ext.suffix] if part]
-    full_domain = ".".join(domain_parts)
+    full_domain = ".".join(domain_parts).lower()
 
-    # 检查完整域名、主域名及所有父域名
+    # 检查完整域名、主域名及所有父域名（均转为小写）
     if full_domain in DOMAIN_WHITELIST:
         return True
-    if ext.registered_domain in DOMAIN_WHITELIST:
+    if ext.registered_domain.lower() in DOMAIN_WHITELIST:
         return True
     for i in range(1, len(domain_parts)):
-        if ".".join(domain_parts[i:]) in DOMAIN_WHITELIST:
+        if ".".join(domain_parts[i:]).lower() in DOMAIN_WHITELIST:
             return True
     return False
 
 
 def is_domain_blocked(url: str) -> bool:
-    """检查域名是否在黑名单中"""
-    domain = extract_domain(url)
+    """检查域名是否在黑名单中（使用小写域名检查）"""
+    domain = extract_domain(url).lower()
     parts = domain.split('.')
 
-    # 检查完整域名及所有父域名
+    # 检查完整域名及所有父域名（均转为小写）
     if domain in DOMAIN_BLACKLIST:
         return True
     for i in range(len(parts) - 1):
-        if '.'.join(parts[i:]) in DOMAIN_BLACKLIST:
+        if '.'.join(parts[i:]).lower() in DOMAIN_BLACKLIST:
             return True
     return False
 
 
 def is_url_acceptable(url: str) -> Tuple[bool, str]:
-    """检查URL是否符合处理条件"""
-    # 只检查黑名单，移除子域名检查逻辑
-    if is_domain_blocked(url):
-        return False, f"URL在黑名单中: {extract_domain(url)}"
+    """检查URL是否符合处理条件（使用小写URL检查）"""
+    # 先将URL转为小写再检查
+    lower_url = url.lower()
+    if is_domain_blocked(lower_url):
+        return False, f"URL在黑名单中: {extract_domain(lower_url)}"
     return True, "URL符合处理条件"
 
 
 def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """验证并处理URL格式"""
+    """验证并处理URL格式（确保返回小写URL）"""
+    # 先将URL转为小写
+    url = url.lower()
+
     if not url.startswith(('http://', 'https://')):
         return None, "URL缺少协议前缀"
 
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # 强制使用HTTPS
+    # 强制使用HTTPS（小写）
     if base_url.startswith('http://'):
         base_url = base_url.replace('http://', 'https://')
 
@@ -232,24 +238,25 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
     """
-    根据跳转历史选择最优URL：
+    根据跳转历史选择最优URL（返回小写URL）
     1. 仅对主域名相同（包括不同后缀）的URL应用后续规则
     2. 同一主域名下，优先保留带www的URL；
     3. 若后缀长度不同（如.com vs .com.hk），保留后缀最短的URL；
     4. 若无www且后缀长度相同，保留最早出现的URL
     """
     if not redirect_history:
-        return original_url
+        return original_url.lower()
 
-    # 解析所有URL的域名信息
+    # 解析所有URL的域名信息（转为小写）
     url_info = []
     for url in redirect_history:
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower()
+        url_lower = url.lower()
+        parsed = urlparse(url_lower)
+        domain = parsed.netloc
         ext = extract(domain)
 
         url_info.append({
-            "url": url,
+            "url": url_lower,
             "main_domain": ext.domain.lower(),  # 核心主域名（如google、baidu）
             "registered_domain": ext.registered_domain.lower(),  # 带后缀的域名
             "subdomain": ext.subdomain.lower(),
@@ -266,9 +273,9 @@ def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
         if info["main_domain"] == base_main_domain
     ]
 
-    # 如果存在主域名不同的URL，直接返回最终跳转URL
+    # 如果存在主域名不同的URL，直接返回最终跳转URL（小写）
     if len(same_main_domain_urls) != len(url_info):
-        return redirect_history[-1]
+        return redirect_history[-1].lower()
 
     # 1. 优先保留带www的URL
     www_urls = [info for info in same_main_domain_urls if info["is_www"]]
@@ -290,17 +297,17 @@ def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
 
 def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
     """
-    跟踪URL跳转，包括HTTP重定向和JS跳转
+    跟踪URL跳转，包括HTTP重定向和JS跳转（返回小写URL）
     返回最终URL、状态码、状态描述和跳转历史
     """
     visited_urls = set()
-    current_url = url
+    current_url = url.lower()  # 初始URL转为小写
     redirect_history = [current_url]
     redirect_count = 0
 
     while redirect_count < REDIRECT_CONFIG['max_redirects']:
         if current_url in visited_urls:
-            # 检测到循环跳转，返回当前URL
+            # 检测到循环跳转，返回当前URL（小写）
             return current_url, 302, f"循环跳转 detected after {redirect_count} steps", redirect_history
         visited_urls.add(current_url)
 
@@ -316,7 +323,7 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
 
             # 处理HTTP重定向
             if 300 <= response.status_code < 400 and 'Location' in response.headers:
-                next_url = response.headers['Location']
+                next_url = response.headers['Location'].lower()  # 跳转URL转为小写
                 # 处理相对路径
                 next_url = urljoin(current_url, next_url)
                 logger.info(f"HTTP重定向: {current_url} -> {next_url}")
@@ -333,7 +340,7 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
                 for pattern in REDIRECT_CONFIG['js_redirect_patterns']:
                     match = re.search(pattern, content, re.IGNORECASE)
                     if match:
-                        js_redirect_url = match.group(1)
+                        js_redirect_url = match.group(1).lower()  # JS跳转URL转为小写
                         # 处理相对路径
                         js_redirect_url = urljoin(current_url, js_redirect_url)
                         logger.info(f"JS跳转检测: {current_url} -> {js_redirect_url}")
@@ -347,7 +354,7 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
                     return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
                 continue
 
-            # 如果没有更多跳转，返回当前URL和状态
+            # 如果没有更多跳转，返回当前URL和状态（小写）
             return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
 
         except requests.exceptions.SSLError:
@@ -355,20 +362,21 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
         except Exception as e:
             return current_url, 500, f"请求错误: {str(e)}", redirect_history
 
-    # 达到最大跳转次数
+    # 达到最大跳转次数（返回小写URL）
     return current_url, 302, f"达到最大最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})", redirect_history
 
 
 def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """检查URL可访问性并处理跳转，返回最终URL"""
+    """检查URL可访问性并处理跳转，返回最终小写URL"""
     try:
-        # 强制使用HTTPS
+        # 强制使用HTTPS并转为小写
+        url = url.lower()
         if url.startswith('http://'):
             url = url.replace('http://', 'https://')
 
-        # 跟踪所有跳转，获取最终URL和跳转历史
+        # 跟踪所有跳转，获取最终URL和跳转历史（均为小写）
         final_url, status_code, status_msg, redirect_history = follow_redirects(url)
-        # 应用URL优选逻辑
+        # 应用URL优选逻辑（返回小写URL）
         preferred_url = get_preferred_url(url, redirect_history)
         logger.info(f"URL跳转跟踪结果: {preferred_url} (状态码: {status_code}, {status_msg})")
 
@@ -376,12 +384,12 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
         if status_code == 495 or status_code >= 500:
             return False, f"URL访问失败: {status_msg} (状态码: {status_code})", url, None
 
-        # 检查URL是否符合处理条件
+        # 检查URL是否符合处理条件（使用小写URL）
         is_acceptable, reason = is_url_acceptable(preferred_url)
         if not is_acceptable:
             return False, f"URL不符合处理条件: {reason}", url, None
 
-        # 验证最终URL格式
+        # 验证最终URL格式（确保返回小写URL）
         processed_url, error = validate_and_process_url(preferred_url)
         if not processed_url:
             return False, f"URL格式验证失败: {error}", url, None
@@ -390,7 +398,7 @@ def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str
         return True, None, processed_url, normalized
 
     except Exception as e:
-        normalized = normalize_url(url)
+        normalized = normalize_url(url.lower())
         return False, f"URL处理异常: {str(e)[:20]}", url, normalized
 
 
@@ -422,7 +430,7 @@ def clean_html_entities(text: str) -> str:
 
 
 def fetch_api(api, url: str) -> Optional[Dict[str, str]]:
-    """调用API获取取网站标题和描述"""
+    """调用API获取取网站标题和描述（使用小写URL）"""
     try:
         encoded_url = quote(url)
         api_url = api['url_template'].format(encoded_url)
@@ -441,7 +449,7 @@ def fetch_api(api, url: str) -> Optional[Dict[str, str]]:
 
 
 def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
-    """通过多个API获取网站标题和描述"""
+    """通过多个API获取网站标题和描述（使用小写URL）"""
     if not url:
         return None
 
@@ -452,7 +460,7 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
         {
             "name": "geeker",
             "url_template": "https://geeker.moe/tdk.php?url={}",
-            "parse_func_func": lambda data: {
+            "parse_func": lambda data: {
                 "title": title,
                 "description": desc
             } if (desc := data.get('description', ''))
@@ -482,7 +490,7 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
         {
             "name": "suol",
             "url_template": "https://api.suol.cc/v1/zs_wzxx.php?url={}",
-            "parse_func_func": lambda data: {
+            "parse_func": lambda data: {
                 "title": title,
                 "description": desc
             } if (desc := data.get('description', ''))
@@ -497,7 +505,7 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
         {
             "name": "ahfi",
             "url_template": "https://api.ahfi.cn/api/websiteinfo?url={}",
-            "parse_func_func": lambda data: {
+            "parse_func": lambda data: {
                 "title": title,
                 "description": desc
             } if (desc := data.get('data', {}).get('description', ''))
@@ -510,7 +518,7 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
         }
     ]
 
-    # 尝试所有API获取信息
+    # 尝试所有API获取信息（使用小写URL）
     for api in api_list:
         try:
             if website_info := fetch_api(api, url):
@@ -590,7 +598,7 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
 
 
 def clean_website_info(url: str, original_title: str = "", original_desc: str = "") -> Optional[Dict[str, str]]:
-    """清理并优化网站标题和描述（结合API和AI）"""
+    """清理并优化网站标题和描述（结合API和AI，使用小写URL）"""
     # 合并无效值集合
     invalid_values = {"null", "暂无标题", "暂无描述"}
 
@@ -604,7 +612,7 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
     if cleaned_original_desc in invalid_values:
         cleaned_original_desc = ""
 
-    # 尝试通过API获取信息
+    # 尝试通过API获取信息（使用小写URL）
     api_info = fetch_website_info(url)
     domain = extract_domain(url)
 
@@ -621,7 +629,7 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
         logger.warning(f"API获取到信息但都无效，丢弃URL: {url}")
         return None
 
-    # 白名单域名直接调用AI
+    # 白名单域名直接调用AI（使用小写URL检查）
     if is_domain_whitelisted(url):
         prompt = f"网址：{domain}"
         if cleaned_original_title:
@@ -696,10 +704,11 @@ def validate_svg(svg_content: str) -> bool:
 
 
 def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
-    """下载并保存图片（带重试机制）"""
+    """下载并保存图片（带重试机制，使用小写URL）"""
     for attempt in range(1, MAX_IMAGE_RETRIES + 1):
         try:
-            # 强制使用HTTPS
+            # 强制使用HTTPS并转为小写
+            img_src = img_src.lower()
             if img_src.startswith('http://'):
                 img_src = img_src.replace('http://', 'https://')
 
@@ -718,7 +727,7 @@ def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
             file_path = os.path.join(ICON_DIRECTORY, filename)
 
             # 处理SVG文件
-            if img_src.lower().endswith('.svg'):
+            if img_src.endswith('.svg'):
                 svg_content = compress_svg(img_response.text)
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(svg_content)
@@ -779,8 +788,8 @@ def generate_filename(
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ) -> Tuple[Optional[str], Optional[str]]:
-    """生成唯一的图标文件名，处理域名冲突"""
-    url_without_slash = url.rstrip('/')
+    """生成唯一的图标文件名，处理域名冲突（使用小写URL）"""
+    url_without_slash = url.rstrip('/').lower()  # URL转为小写
     ext = extract(url_without_slash)
 
     subdomain = ext.subdomain.lower()
@@ -899,11 +908,11 @@ def process_url(
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ):
-    """处理单个URL，包括验证、去重、标题描述生成和图标下载"""
-    # 提取基础信息
+    """处理单个URL，包括验证、去重、标题描述生成和图标下载（确保URL小写）"""
+    # 提取基础信息，URL转为小写
     original_title = item.get('name', '').strip()
-    url = item.get('url', '')
-    img_src = item.get('imgSrc', '')
+    url = item.get('url', '').lower()  # 原始URL转为小写
+    img_src = item.get('imgSrc', '').lower()  # 图标URL转为小写
     background_color = item.get('backgroundColor', '')
     original_desc = item.get('description', '')
 
@@ -912,7 +921,7 @@ def process_url(
         logger.warning("丢弃url为空的条目")
         return
 
-    # 检查URL可访问性和跳转处理
+    # 检查URL可访问性和跳转处理（返回小写URL）
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
     if not accessible:
         logger.warning(f"不可处理URL: {url} - {error}")
@@ -922,12 +931,12 @@ def process_url(
         logger.warning(f"无法标准化URL: {final_url}")
         return
 
-    # 检查重复URL
+    # 检查重复URL（使用小写URL）
     with lock:
         if normalized_url in processed_normalized_urls:
             return
 
-    # 处理标题和描述
+    # 处理标题和描述（使用小写URL）
     website_info = clean_website_info(final_url, original_title, original_desc)
     if not website_info:
         logger.warning(f"无法生成有效的标题和描述，丢弃URL: {final_url}")
@@ -936,29 +945,29 @@ def process_url(
     # 处理颜色
     expanded_color = expand_color_format(background_color)
 
-    # 生成文件名
+    # 生成文件名（使用小写URL）
     filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data, lock)
     if filename is None:
         logger.info(f"URL被丢弃: {final_url} - {conflict_msg}")
         return
 
-    # 下载并保存图片
+    # 下载并保存图片（使用小写URL）
     success, status = download_and_save_image(img_src, filename)
     if not success:
         logger.warning(f"图片最终下载失败，丢弃条目: {url} - {status}")
         return
 
-    # 保存处理结果
+    # 保存处理结果（URL确保为小写）
     with lock:
         processed_normalized_urls.add(normalized_url)
-        domain = extract(final_url.rstrip('/'))
+        domain = extract(final_url.rstrip('/').lower())
         processed_domains[domain.domain] = {
             'suffix': domain.suffix,
             'filename': filename
         }
         processed_data.append(WebsiteData(
             name=website_info["title"],  # 使用AI生成的标题
-            url=final_url,  # 使用跳转后的最终URL
+            url=final_url,  # 使用跳转后的最终URL（已确保小写）
             description=website_info["description"],  # 使用AI生成的描述
             img_src=img_src,
             local_filename=filename,
@@ -968,7 +977,7 @@ def process_url(
 
 
 def process_category(category: str, url_queue: list, lock: threading.Lock):
-    """获取指定分类的所有URL并加入处理队列"""
+    """获取指定分类的所有URL并加入处理队列（URL转为小写）"""
     logger.info(f"开始获取分类[{category}]的URL")
     base_url = 'https://api.codelife.cc/website/list'
     lang = 'zh'
@@ -993,11 +1002,14 @@ def process_category(category: str, url_queue: list, lock: threading.Lock):
                 logger.info(f"分类[{category}]的URL获取完成")
                 break
 
-            # 添加到队列
+            # 添加到队列，将URL转为小写
             with lock:
                 for item in data['data']:
-                    if item.get('url', '').startswith('http://'):
-                        item['url'] = item['url'].replace('http://', 'https://')
+                    url = item.get('url', '').lower()  # URL转为小写
+                    if url.startswith('http://'):
+                        url = url.replace('http://', 'https://')
+                    item['url'] = url
+                    item['imgSrc'] = item.get('imgSrc', '').lower()  # 图标URL转为小写
                     url_queue.append((item, category))
 
             page += 1
@@ -1010,8 +1022,8 @@ def process_category(category: str, url_queue: list, lock: threading.Lock):
 
 
 def generate_sql_statements(websites: List[WebsiteData]) -> str:
-    """生成SQL导入语句"""
-    # 按分类ID和名称排序
+    """生成SQL导入语句（确保URL为小写）"""
+    # 按area值(分类ID)排序，再按name排序
     sorted_websites = sorted(
         websites,
         key=lambda x: (CATEGORY_IDS.get(x.category, 15), x.name)
@@ -1021,8 +1033,8 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
     seen_normalized_urls = set()
 
     for site in sorted_websites:
-        # 确保URL末尾带有斜杠
-        url_with_slash = site.url.rstrip('/') + '/'
+        # 确保URL末尾带有斜杠且为小写
+        url_with_slash = site.url.rstrip('/').lower() + '/'
         normalized = normalize_url(url_with_slash)
 
         if normalized in seen_normalized_urls:
@@ -1035,14 +1047,15 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
         escaped_name = site.name.replace("'", "''")
         escaped_description = site.description.replace("'", "''")
 
-        # 提取域名
+        # 提取域名（小写）
         domain_parts = extract(url_with_slash)
         domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}" if domain_parts.subdomain else domain_parts.registered_domain
+        domain = domain.lower()  # 确保域名为小写
 
-        # 获取分类ID
+        # 获取分类ID(area值)
         category_id = CATEGORY_IDS.get(site.category, 15)
 
-        # 生成SQL语句，使用带斜杠的URL
+        # 生成SQL语句，使用带斜杠的小写URL
         sql = (
             f"INSERT INTO `mtab`.`linkstore` "
             f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
@@ -1084,7 +1097,7 @@ def main() -> None:
     queue_lock = threading.Lock()  # 队列操作锁
     data_lock = threading.Lock()  # 数据操作锁
 
-    # 第一步：多线程获取所有分类的URL
+    # 第一步：多线程获取所有分类的URL（转为小写）
     logger.info("===== 开始收集所有分类的URL =====")
     with ThreadPoolExecutor(max_workers=min(len(CATEGORIES), 2)) as category_executor:
         futures = [
@@ -1099,7 +1112,7 @@ def main() -> None:
 
     logger.info(f"\n共收集到 {len(url_queue)} 个URL待处理\n")
 
-    # 第二步：多线程处理所有URL
+    # 第二步：多线程处理所有URL（确保处理过程中URL为小写）
     logger.info("===== 开始多线程处理URL =====")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as url_executor:
         pbar = tqdm(total=len(url_queue), desc="处理URL进度")
@@ -1141,7 +1154,7 @@ def main() -> None:
             print(f"   描述: {item.description}")
             print(f"   本地文件: {item.local_filename}\n")
 
-        # 生成SQL文件
+        # 生成SQL文件（确保URL为小写）
         sql_content = generate_sql_statements(processed_data)
         save_file(sql_content, SQL_OUTPUT_FILE)
 
