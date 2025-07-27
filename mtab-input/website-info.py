@@ -921,6 +921,11 @@ def process_url(
         logger.warning("丢弃url为空的条目")
         return
 
+    # 检查颜色是否为空，为空则丢弃
+    if not background_color:
+        logger.warning(f"丢弃颜色为空的条目: {url}")
+        return
+
     # 检查URL可访问性和跳转处理（返回小写URL）
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
     if not accessible:
@@ -944,6 +949,10 @@ def process_url(
 
     # 处理颜色
     expanded_color = expand_color_format(background_color)
+    # 再次检查扩展后的颜色是否为空
+    if not expanded_color:
+        logger.warning(f"丢弃扩展后颜色为空的条目: {url}")
+        return
 
     # 生成文件名（使用小写URL）
     filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data, lock)
@@ -1152,7 +1161,8 @@ def main() -> None:
             print(f"{i}. [{item.category}] {item.name}")
             print(f"   URL: {item.url}")
             print(f"   描述: {item.description}")
-            print(f"   本地文件: {item.local_filename}\n")
+            print(f"   本地文件: {item.local_filename}")
+            print(f"   背景颜色: {item.background_color}\n")
 
         # 生成SQL文件（确保URL为小写）
         sql_content = generate_sql_statements(processed_data)
