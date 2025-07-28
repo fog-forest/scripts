@@ -299,6 +299,9 @@ class SQLURLBrowser:
     def on_canvas_configure(self, event):
         """调整截图标签位置以适应窗口大小"""
         self.screenshot_canvas.itemconfig(self.screenshot_canvas.find_withtag("window"), width=event.width)
+        # 当画布大小改变时，重新调整当前显示的截图
+        if self.current_id and self.current_id in self.url_data:
+            self.load_screenshot(self.url_data[self.current_id].copy())
 
     # 文件处理方法
     def browse_file(self):
@@ -581,7 +584,7 @@ class SQLURLBrowser:
             self.icon_label.config(text="无图标")
 
     def load_screenshot(self, data):
-        """加载并显示网站截图"""
+        """加载并显示网站截图 - 优化版：先保证完全展示再尽可能大"""
         self.screenshot_label.config(image="")
         self.screenshot_label.image = None
 
@@ -602,19 +605,34 @@ class SQLURLBrowser:
                     self.screenshot_label.config(text="截图文件损坏")
                     return
 
-                # 加载并缩放截图
+                # 加载截图
                 img = Image.open(screenshot_path)
-                canvas_width = self.screenshot_canvas.winfo_width() or 800
-                canvas_height = self.screenshot_canvas.winfo_height() or 600
+                img_width, img_height = img.size
 
-                width_ratio = canvas_width / img.width
-                height_ratio = canvas_height / img.height
-                ratio = max(width_ratio, height_ratio)
+                # 获取当前画布尺寸
+                canvas_width = self.screenshot_canvas.winfo_width()
+                canvas_height = self.screenshot_canvas.winfo_height()
 
-                new_width = int(img.width * ratio)
-                new_height = int(img.height * ratio)
+                # 如果画布尺寸尚未确定（可能在初始化时），使用默认值
+                if canvas_width <= 1 or canvas_height <= 1:
+                    canvas_width = 800
+                    canvas_height = 600
+
+                # 计算宽度和高度的缩放比例（确保图片完全显示）
+                width_ratio = canvas_width / img_width
+                height_ratio = canvas_height / img_height
+
+                # 取最小比例，确保图片完全显示在容器中
+                scale_ratio = min(width_ratio, height_ratio)
+
+                # 计算新尺寸，确保图片完全显示且尽可能大
+                new_width = int(img_width * scale_ratio)
+                new_height = int(img_height * scale_ratio)
+
+                # 缩放图片
                 img = img.resize((new_width, new_height), Image.LANCZOS)
 
+                # 创建PhotoImage对象
                 photo = ImageTk.PhotoImage(img)
                 self.screenshot_label.config(image=photo)
                 self.screenshot_label.image = photo
@@ -624,7 +642,7 @@ class SQLURLBrowser:
                 y = (canvas_height - new_height) // 2
                 self.screenshot_canvas.coords(self.screenshot_canvas.find_withtag("window"), x, y)
 
-                logger.info(f"成功加载截图: {screenshot_path}")
+                logger.info(f"成功加载截图: {screenshot_path}, 缩放比例: {scale_ratio:.2f}")
             except Exception as e:
                 logger.error(f"无法加载截图: {str(e)}")
                 self.screenshot_label.config(text="无法加载截图")
@@ -1168,7 +1186,7 @@ class SQLURLBrowser:
                     if item["id"] in self.temp_desc_changes:
                         new_desc = self.temp_desc_changes[item["id"]]
                         sql_pattern = re.compile(
-                            r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
+                            r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
                             re.IGNORECASE)
                         sql_match = sql_pattern.match(current_sql)
 
