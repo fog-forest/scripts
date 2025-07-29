@@ -9,7 +9,7 @@
 # 截图重试配置
 SCREENSHOT_MAX_RETRIES = 3  # 最大重试次数
 SCREENSHOT_RETRY_DELAY = 2  # 重试延迟（秒）
-MAX_THREADS = 3  # 最大同时运行的线程数量
+MAX_THREADS = 4  # 最大同时运行的线程数量
 
 # 分类映射关系
 CATEGORY_IDS = {
@@ -19,6 +19,11 @@ CATEGORY_IDS = {
     "sports": 12, "finance": 13, "others": 14
 }
 ID_TO_CATEGORY = {v: k for k, v in CATEGORY_IDS.items()}  # 反向映射：ID到分类名称
+
+# 域名白名单配置
+DOMAIN_WHITELIST = [
+    "google.com", "yandex.com"
+]
 
 # 导入模块
 import logging
@@ -127,6 +132,56 @@ class SQLURLBrowser:
 
         # 状态和进度条
         self.create_status_bar()
+
+        # 白名单配置区域
+        self.create_whitelist_frame()
+
+    def create_whitelist_frame(self):
+        """创建白名单配置区域"""
+        self.whitelist_frame = ttk.LabelFrame(self.main_frame, text="域名白名单", padding="10")
+        self.whitelist_frame.pack(fill=tk.X, pady=5)
+
+        self.whitelist_text = ScrolledText(self.whitelist_frame, wrap=tk.WORD, height=3)
+        self.whitelist_text.pack(fill=tk.X, padx=5, pady=5)
+
+        # 从配置加载白名单
+        self.load_whitelist()
+
+        self.whitelist_button = ttk.Button(self.whitelist_frame, text="保存白名单", command=self.save_whitelist)
+        self.whitelist_button.pack(side=tk.RIGHT, padx=5)
+
+    def load_whitelist(self):
+        """从配置文件加载白名单"""
+        whitelist_path = os.path.join(os.getcwd(), "domain_whitelist.txt")
+        if os.path.exists(whitelist_path):
+            try:
+                with open(whitelist_path, 'r', encoding='utf-8') as f:
+                    domains = [line.strip() for line in f if line.strip()]
+                    self.whitelist_text.delete(1.0, tk.END)
+                    self.whitelist_text.insert(tk.END, '\n'.join(domains))
+            except Exception as e:
+                logger.error(f"加载白名单失败: {str(e)}")
+                self.whitelist_text.delete(1.0, tk.END)
+                self.whitelist_text.insert(tk.END, '\n'.join(DOMAIN_WHITELIST))
+        else:
+            # 使用默认白名单
+            self.whitelist_text.delete(1.0, tk.END)
+            self.whitelist_text.insert(tk.END, '\n'.join(DOMAIN_WHITELIST))
+
+    def save_whitelist(self):
+        """保存白名单到配置文件"""
+        whitelist_text = self.whitelist_text.get(1.0, tk.END).strip()
+        domains = [line.strip() for line in whitelist_text.split('\n') if line.strip()]
+
+        whitelist_path = os.path.join(os.getcwd(), "domain_whitelist.txt")
+        try:
+            with open(whitelist_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(domains))
+            messagebox.showinfo("成功", f"已保存 {len(domains)} 个域名到白名单")
+            logger.info(f"已保存白名单: {domains}")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存白名单失败: {str(e)}")
+            logger.error(f"保存白名单失败: {str(e)}")
 
     def create_file_frame(self):
         """创建文件选择区域"""
@@ -765,7 +820,19 @@ class SQLURLBrowser:
                     url_needs_update = False
                     new_url = target_url
 
-                    if normalized_target != normalized_current:
+                    # 加载白名单
+                    whitelist_text = self.whitelist_text.get(1.0, tk.END).strip()
+                    whitelist_domains = [line.strip() for line in whitelist_text.split('\n') if line.strip()]
+
+                    # 检查目标域名是否在白名单中
+                    is_whitelisted = any(
+                        normalized_target.endswith(domain) or normalized_target == domain
+                        for domain in whitelist_domains
+                    )
+
+                    if is_whitelisted:
+                        logger.info(f"域名 {normalized_target} 在白名单中，不进行URL修正 (ID: {item_id})")
+                    elif normalized_target != normalized_current:
                         logger.warning(f"URL域名不匹配: 预期 {target_domain}，实际 {current_domain} (ID: {item_id})")
                         # 构建新的标准化URL
                         new_url = self.normalize_url(current_url)

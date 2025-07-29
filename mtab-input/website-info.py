@@ -35,7 +35,7 @@ CATEGORY_IDS = {
 
 # 域名过滤配置
 DOMAIN_BLACKLIST = {
-    "trae.cn", "trae.ai", "js.design", "itab.link", "zenvideo.qq.com"
+    "trae.cn", "trae.ai", "js.design", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
     "x.com", "qq.com", "google.com", "github.com", "youtube.com", "facebook.com",
@@ -543,7 +543,7 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
         "role": "system",
         "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题和中文描述。"
                    "1. 标题要求简短最好一个词，优先从我给你的标题中取，不要翻译；"
-                   "2. 描述长度控制在120字符（varchar）内，尽量精简，末尾不需要标点符号；"
+                   "2. 描述长度控制在120字符（varchar）内，尽量精简，描述末尾不需要任何标点符号；"
                    "返回给我内容要求两个字段 title、description 的JSON格式。"
     }
 
