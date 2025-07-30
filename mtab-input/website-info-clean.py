@@ -25,6 +25,7 @@ DOMAIN_WHITELIST = [
     "google.com", "yandex.com"
 ]
 
+import json
 # 导入模块
 import logging
 import os
@@ -81,10 +82,13 @@ class SQLURLBrowser:
         self.id_list = []  # 保持ID的顺序
         self.current_id = None  # 当前选中的ID
 
-        # 临时存储
+        # 临时时存储 - 这些将被自动保存
         self.temp_title_changes = {}  # {id: new_title}
         self.temp_desc_changes = {}  # {id: new_desc}
         self.items_to_discard = set()  # 待丢弃的项ID
+
+        # 历史记录文件路径
+        self.history_file = os.path.join(os.getcwd(), ".url_modifications.json")
 
         # 目录与文件路径
         self.sql_dir = None
@@ -103,6 +107,9 @@ class SQLURLBrowser:
 
         # 绑定事件
         self.bind_events()
+
+        # 加载历史记录
+        self.load_history()
 
         logger.info("应用程序初始化完成")
 
@@ -251,6 +258,10 @@ class SQLURLBrowser:
                                       state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, padx=5)
 
+        # 添加清空记录按钮
+        self.clear_history_button = ttk.Button(self.action_frame, text="清空记录", command=self.clear_history)
+        self.clear_history_button.pack(side=tk.LEFT, padx=5)
+
     def create_result_frame(self):
         """创建结果展示区域"""
         self.result_frame = ttk.LabelFrame(self.main_frame, text="结果展示", padding="10")
@@ -298,7 +309,7 @@ class SQLURLBrowser:
         self.title_entry.pack(fill=tk.X, padx=5, pady=5)
 
         # 描述编辑区域
-        self.desc_frame = ttk.LabelFrame(self.right_frame, text="网站描述", padding="5")
+        self.desc_frame = ttk.LabelFrame(self.right_frame, text="网站描述（可修改）", padding="5")
         self.desc_frame.pack(fill=tk.X, pady=5)
 
         self.desc_text = ScrolledText(self.desc_frame, wrap=tk.WORD, width=40, height=3)
@@ -360,7 +371,7 @@ class SQLURLBrowser:
 
     # 文件处理方法
     def browse_file(self):
-        """浏览并选择SQL文件"""
+        """浏览览并选择SQL文件"""
         file_path = filedialog.askopenfilename(
             title="选择SQL文件",
             filetypes=[("SQL files", "*.sql"), ("All files", "*.*")]
@@ -403,9 +414,6 @@ class SQLURLBrowser:
             self.url_data.clear()
             self.id_list.clear()
             self.current_id = None
-            self.temp_title_changes.clear()
-            self.temp_desc_changes.clear()
-            self.items_to_discard.clear()
 
             # 读取并解析SQL文件
             with open(sql_file, 'r', encoding='utf-8') as f:
@@ -462,9 +470,16 @@ class SQLURLBrowser:
             # 在Treeview中显示数据
             for item_id in self.id_list:
                 item = self.url_data[item_id]
+                # 初始状态值
+                status = item["status"]
+                name = item["name"]
+
                 self.url_tree.insert("", tk.END, iid=item_id, values=(
-                    item["id"], item["name"], item["url"], item["category"], item["status"]
+                    item["id"], name, item["url"], item["category"], status
                 ))
+
+            # 数据加载完成后应用历史记录
+            self.apply_history_to_ui()
 
             # 显示结果统计
             extracted_count = len(self.url_data)
@@ -551,9 +566,11 @@ class SQLURLBrowser:
 
         # 更新显示内容
         self.browser_title_var.set(data["title"] if data["title"] else "未获取标题")
+        # 应用历史修改
         self.title_var.set(self.temp_title_changes.get(self.current_id, data["name"]))
 
         self.desc_text.delete(1.0, tk.END)
+        # 应用历史修改
         self.desc_text.insert(tk.END, self.temp_desc_changes.get(self.current_id, data["tips"]))
 
         self.url_var.set(data["url"])
@@ -713,11 +730,13 @@ class SQLURLBrowser:
 
         logger.info("开始批量获取网站信息")
 
-        # 重置状态
+        # 重置状态，但保留历史修改
         for item_id, item in self.url_data.items():
             if item_id not in self.items_to_discard:
                 item["processed"] = False
-                item["status"] = "未处理"
+                # 如果没有历史修改，重置状态
+                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                    item["status"] = "未处理"
                 item["title"] = ""
                 # 清除旧截图
                 if os.path.exists(item["screenshot_path"]):
@@ -764,22 +783,25 @@ class SQLURLBrowser:
             self.thread_pool.shutdown(wait=True)
             self.root.after(0, lambda: self.status_var.set("批量获取完成"))
             self.root.after(0, lambda: messagebox.showinfo("完成", "已完成所有网站信息的获取"))
+            # 保存修改记录
+            self.save_history()
 
         threading.Thread(target=batch_fetch).start()
         self.status_var.set("正在批量获取网站信息...")
 
     def fetch_site_info(self, item_id, processed, total):
         """获取单个网站的信息和截图（带URL自动修正功能）"""
+        # 首先检查是否为已丢弃项，如果是则直接返回
+        if item_id in self.items_to_discard:
+            logger.info(f"ID {item_id} 已被标记为丢弃，跳过截图获取")
+            return
+
         if item_id not in self.url_data:
             logger.error(f"ID {item_id} 不存在于数据中")
             return
 
         data = self.url_data[item_id].copy()
         target_url = data["url"]  # 记录目标URL用于验证
-
-        if item_id in self.items_to_discard:
-            logger.info(f"ID {item_id} 已被标记为丢弃，跳过处理")
-            return
 
         success = False
         error_msg = ""
@@ -867,14 +889,18 @@ class SQLURLBrowser:
                                 if self.url_tree.exists(item_id):
                                     values = list(self.url_tree.item(item_id, "values"))
                                     values[2] = new_url  # 更新URL列
-                                    values[4] = "已修正"  # 更新状态列
+                                    # 如果没有历史修改，更新状态
+                                    if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                                        values[4] = "已修正"  # 更新状态列
                                     self.url_tree.item(item_id, values=values)
                             else:
-                                self.url_data[item_id]["status"] = "已获取"
-                                if self.url_tree.exists(item_id):
-                                    values = list(self.url_tree.item(item_id, "values"))
-                                    values[4] = "已获取"
-                                    self.url_tree.item(item_id, values=values)
+                                # 如果没有历史修改，更新状态
+                                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                                    self.url_data[item_id]["status"] = "已获取"
+                                    if self.url_tree.exists(item_id):
+                                        values = list(self.url_tree.item(item_id, "values"))
+                                        values[4] = "已获取"
+                                        self.url_tree.item(item_id, values=values)
 
                             self.url_data[item_id]["processed"] = True
                             self.url_data[item_id]["title"] = page_title
@@ -909,12 +935,16 @@ class SQLURLBrowser:
 
             def update_error_ui():
                 if item_id in self.url_data:
-                    self.url_data[item_id]["status"] = "获取失败"
+                    # 如果没有历史修改，更新状态
+                    if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                        self.url_data[item_id]["status"] = "获取失败"
                     self.url_data[item_id]["processed"] = True
 
                     if self.url_tree.exists(item_id):
                         values = list(self.url_tree.item(item_id, "values"))
-                        values[4] = "获取失败"
+                        # 如果没有历史修改，更新状态
+                        if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                            values[4] = "获取失败"
                         self.url_tree.item(item_id, values=values)
 
                     # 清除错误截图
@@ -1113,6 +1143,8 @@ class SQLURLBrowser:
             self.status_var.set(f"标题已修改（未保存）: {new_title}")
             logger.info(f"已修改标题 (ID: {self.current_id}): {old_title} -> {new_title}")
             self.update_button_states()
+            # 自动保存修改记录
+            self.save_history()
 
     def update_desc(self, event=None):
         """更新网站描述"""
@@ -1138,6 +1170,8 @@ class SQLURLBrowser:
             self.status_var.set(f"描述已修改（未保存）")
             logger.info(f"已修改描述 (ID: {self.current_id})")
             self.update_button_states()
+            # 自动保存修改记录
+            self.save_history()
 
     # 数据管理方法
     def discard_item(self):
@@ -1173,6 +1207,8 @@ class SQLURLBrowser:
                 self.status_var.set(f"已标记丢弃 {data['name']}")
                 logger.info(f"已标记丢弃项 (ID: {item_id}, URL: {data['url']})")
                 self.update_button_states()
+                # 自动保存修改记录
+                self.save_history()
 
                 # 自动选择下一个
                 self.next_url()
@@ -1253,7 +1289,7 @@ class SQLURLBrowser:
                     if item["id"] in self.temp_desc_changes:
                         new_desc = self.temp_desc_changes[item["id"]]
                         sql_pattern = re.compile(
-                            r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
+                            r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
                             re.IGNORECASE)
                         sql_match = sql_pattern.match(current_sql)
 
@@ -1266,6 +1302,9 @@ class SQLURLBrowser:
             self.temp_title_changes.clear()
             self.temp_desc_changes.clear()
             self.items_to_discard.clear()
+
+            # 清除历史记录
+            self.clear_history(show_message=False)
 
             # 更新状态
             for item_id, item in self.url_data.items():
@@ -1286,23 +1325,151 @@ class SQLURLBrowser:
             messagebox.showerror("错误", f"保存文件时出错: {str(e)}")
             logger.error(f"保存文件时出错: {str(e)}")
 
-    # 清理方法
-    def on_closing(self):
-        """关闭应用程序时清理资源"""
-        logger.info("开始关闭应用程序，清理资源")
+    # 历史记录管理
+    def apply_history_to_ui(self):
+        """将历史记录应用到UI"""
+        # 应用标题修改
+        for item_id, new_title in self.temp_title_changes.items():
+            if item_id in self.url_data and self.url_tree.exists(item_id):
+                values = list(self.url_tree.item(item_id, "values"))
+                values[1] = new_title
+                values[4] = "已修改"
+                self.url_tree.item(item_id, values=values)
+                self.url_data[item_id]["status"] = "已修改"
+                self.url_data[item_id]["processed"] = True
 
-        # 关闭主浏览器
+        # 应用描述修改
+        for item_id, new_desc in self.temp_desc_changes.items():
+            if item_id in self.url_data and self.url_tree.exists(item_id):
+                values = list(self.url_tree.item(item_id, "values"))
+                values[4] = "已修改"
+                self.url_tree.item(item_id, values=values)
+                self.url_data[item_id]["status"] = "已修改"
+                self.url_data[item_id]["processed"] = True
+
+        # 应用丢弃状态
+        for item_id in self.items_to_discard:
+            if item_id in self.url_data and self.url_tree.exists(item_id):
+                values = list(self.url_tree.item(item_id, "values"))
+                values[4] = "已丢弃"
+                self.url_tree.item(item_id, values=values)
+                self.url_data[item_id]["status"] = "已丢弃"
+                self.url_data[item_id]["processed"] = True
+
+        # 更新按钮状态
+        self.update_button_states()
+
+    def save_history(self):
+        """保存修改记录到文件"""
+        try:
+            history_data = {
+                "temp_title_changes": self.temp_title_changes,
+                "temp_desc_changes": self.temp_desc_changes,
+                "items_to_discard": list(self.items_to_discard)
+            }
+
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(history_data, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"已保存修改记录到 {self.history_file}")
+        except Exception as e:
+            logger.error(f"保存修改记录失败: {str(e)}")
+
+    def load_history(self):
+        """从文件加载修改记录并立即应用到UI"""
+        if not os.path.exists(self.history_file):
+            logger.info("没有找到历史记录文件")
+            return
+
+        try:
+            with open(self.history_file, 'r', encoding='utf-8') as f:
+                history_data = json.load(f)
+
+            # 转换数据类型并处理可能的格式问题
+            self.temp_title_changes = {
+                int(k): v for k, v in history_data.get("temp_title_changes", {}).items()
+                if isinstance(k, (str, int)) and v and isinstance(v, str)
+            }
+            self.temp_desc_changes = {
+                int(k): v for k, v in history_data.get("temp_desc_changes", {}).items()
+                if isinstance(k, (str, int)) and v and isinstance(v, str)
+            }
+            self.items_to_discard = set(
+                int(id) for id in history_data.get("items_to_discard", [])
+                if isinstance(id, (str, int))
+            )
+
+            logger.info(f"已加载历史记录，包含 {len(self.temp_title_changes)} 个标题修改，"
+                        f"{len(self.temp_desc_changes)} 个描述修改，"
+                        f"{len(self.items_to_discard)} 个丢弃项")
+
+            # 加载历史记录后立即更新UI
+            self.apply_history_to_ui()
+
+        except Exception as e:
+            logger.error(f"加载历史记录失败: {str(e)}")
+            # 尝试删除损坏的历史文件
+            try:
+                os.remove(self.history_file)
+                logger.info(f"已删除损坏的历史记录文件: {self.history_file}")
+            except Exception as e2:
+                logger.warning(f"无法删除损坏的历史记录文件: {str(e2)}")
+
+    def clear_history(self, show_message=True):
+        """清空历史记录"""
+        try:
+            if os.path.exists(self.history_file):
+                os.remove(self.history_file)
+                logger.info(f"已清空历史记录: {self.history_file}")
+
+            self.temp_title_changes.clear()
+            self.temp_desc_changes.clear()
+            self.items_to_discard.clear()
+
+            # 更新UI
+            for item_id, item in self.url_data.items():
+                if self.url_tree.exists(item_id):
+                    values = list(self.url_tree.item(item_id, "values"))
+                    # 恢复原始状态
+                    if item["status"] in ["已修改", "已丢弃"]:
+                        values[1] = item["name"]
+                        values[4] = "未处理" if not item["processed"] else "已获取"
+                        self.url_tree.item(item_id, values=values)
+                        item["status"] = "未处理" if not item["processed"] else "已获取"
+
+            self.update_display()
+            self.update_button_states()
+
+            if show_message:
+                messagebox.showinfo("成功", "已清空所有修改记录")
+
+        except Exception as e:
+            logger.error(f"清空历史记录失败: {str(e)}")
+            if show_message:
+                messagebox.showerror("错误", f"清空历史记录失败: {str(e)}")
+
+    def on_closing(self):
+        """处理窗口关闭事件"""
+        # 保存历史记录
+        self.save_history()
+
+        # 关闭浏览器
         if self.browser:
             try:
                 self.browser.quit()
-                logger.info("已关闭主浏览器窗口")
-            except:
-                pass
+                logger.info("已关闭浏览器")
+            except Exception as e:
+                logger.warning(f"关闭浏览器失败: {str(e)}")
 
         # 关闭线程池
         if self.thread_pool:
-            self.thread_pool.shutdown(wait=False)
+            try:
+                self.thread_pool.shutdown(wait=False)
+                logger.info("已关闭线程池")
+            except Exception as e:
+                logger.warning(f"关闭线程池失败: {str(e)}")
 
+        logger.info("应用程序已关闭")
         self.root.destroy()
 
 
