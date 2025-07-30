@@ -21,11 +21,14 @@ AI_CONFIG = {
     "retry_delay": 1  # 重试延迟时间(秒)
 }
 
-# 分类配置
+# 分类配置 - 原始顺序
 CATEGORIES = [
-    "ai", "app", "news", "music", "tech", "photos", "life", "education",
-    "entertainment", "shopping", "social", "read", "sports", "finance", "others"
+    "others", "ai", "app", "news", "music", "tech", "photos", "life", "education",
+    "entertainment", "shopping", "social", "read", "sports", "finance"
 ]
+# 反向顺序
+REVERSED_CATEGORIES = list(reversed(CATEGORIES))
+
 CATEGORY_IDS = {
     "ai": 1, "app": 1, "news": 2, "music": 3,
     "tech": 4, "photos": 5, "life": 6, "education": 9,
@@ -543,7 +546,7 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
         "role": "system",
         "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题和中文描述。"
                    "1. 标题要求简短最好一个词，优先从我给你的标题中取，不要翻译；"
-                   "2. 描述长度控制在120字符（varchar）内，尽量精简，描述末尾不需要任何标点符号；"
+                   "2. 描述长度控制在120字符（varchar）内，尽量精简，描述语句不要有多余的空格和缺少标点符号，描述语句末尾不要带任何标点符号；"
                    "返回给我内容要求两个字段 title、description 的JSON格式。"
     }
 
@@ -625,6 +628,10 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
         # 只要标题或描述有一个有效就调用AI
         if api_title or api_desc:
             if ai_info := ask_openai(f"网址：{domain}\n网站标题：{api_title}\n网站描述：{api_desc}"):
+                # 检查标题是否包含俄文字符（西里尔字母）
+                if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
+                    logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
+                    return None
                 return ai_info
         logger.warning(f"API获取到信息但都无效，丢弃URL: {url}")
         return None
@@ -638,6 +645,10 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
             prompt += f"\n网站描述：{cleaned_original_desc}"
 
         if ai_info := ask_openai(prompt):
+            # 检查标题是否包含俄文字符（西里尔字母）
+            if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
+                logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
+                return None
             return ai_info
         logger.warning(f"白名单域名但AI调用失败，丢弃URL: {url}")
         return None
@@ -651,6 +662,10 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
             prompt += f"\n网站描述：{cleaned_original_desc}"
 
         if ai_info := ask_openai(prompt):
+            # 检查标题是否包含俄文字符（西里尔字母）
+            if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
+                logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
+                return None
             return ai_info
         logger.warning(f"有原始信息但AI调用失败，丢弃URL: {url}")
         return None
@@ -985,8 +1000,8 @@ def process_url(
         ))
 
 
-def process_category(category: str, url_queue: list, lock: threading.Lock):
-    """获取指定分类的所有URL并加入处理队列（URL转为小写）"""
+def process_category(category: str, url_queue: list, lock: threading.Lock, seen_urls: Set[str]):
+    """获取指定分类的所有URL并加入处理队列（URL转为小写），并检查是否已存在"""
     logger.info(f"开始获取分类[{category}]的URL")
     base_url = 'https://api.codelife.cc/website/list'
     lang = 'zh'
@@ -1011,15 +1026,26 @@ def process_category(category: str, url_queue: list, lock: threading.Lock):
                 logger.info(f"分类[{category}]的URL获取完成")
                 break
 
-            # 添加到队列，将URL转为小写
+            # 添加到队列，将URL转为小写，并检查是否已存在
             with lock:
+                new_items_count = 0
                 for item in data['data']:
                     url = item.get('url', '').lower()  # URL转为小写
                     if url.startswith('http://'):
                         url = url.replace('http://', 'https://')
-                    item['url'] = url
-                    item['imgSrc'] = item.get('imgSrc', '').lower()  # 图标URL转为小写
-                    url_queue.append((item, category))
+
+                    # 标准化URL用于去重检查
+                    normalized_url = normalize_url(url)
+
+                    # 检查URL是否已存在，不存在才添加
+                    if normalized_url not in seen_urls:
+                        seen_urls.add(normalized_url)
+                        item['url'] = url
+                        item['imgSrc'] = item.get('imgSrc', '').lower()  # 图标URL转为小写
+                        url_queue.append((item, category))
+                        new_items_count += 1
+
+                logger.info(f"分类[{category}]第{page}页添加了{new_items_count}个新URL")
 
             page += 1
             time.sleep(1 + random.uniform(0, 1))  # 随机延迟避免请求过于频繁
@@ -1093,7 +1119,8 @@ def main() -> None:
     logger.info(f"AI最大重试次数: {AI_CONFIG['max_retries']}")
     logger.info(f"最大URL跳转次数: {REDIRECT_CONFIG['max_redirects']}")
     logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
-    logger.info(f"处理分类数量: {len(CATEGORIES)}")
+    logger.info(f"处理分类数量: {len(REVERSED_CATEGORIES)}")
+    logger.info(f"处理分类顺序: {REVERSED_CATEGORIES}")  # 显示反向分类顺序
     logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
     logger.info("\n")
 
@@ -1105,13 +1132,14 @@ def main() -> None:
     url_queue = []  # 存储所有待处理的URL任务
     queue_lock = threading.Lock()  # 队列操作锁
     data_lock = threading.Lock()  # 数据操作锁
+    seen_urls = set()  # 用于跟踪已获取的URL，确保去重
 
-    # 第一步：多线程获取所有分类的URL（转为小写）
+    # 第一步：多线程获取所有分类的URL（按反向顺序，从others到ai）
     logger.info("===== 开始收集所有分类的URL =====")
-    with ThreadPoolExecutor(max_workers=min(len(CATEGORIES), 2)) as category_executor:
+    with ThreadPoolExecutor(max_workers=min(len(REVERSED_CATEGORIES), 2)) as category_executor:
         futures = [
-            category_executor.submit(process_category, category, url_queue, queue_lock)
-            for category in CATEGORIES
+            category_executor.submit(process_category, category, url_queue, queue_lock, seen_urls)
+            for category in REVERSED_CATEGORIES
         ]
         for future in as_completed(futures):
             try:
@@ -1119,7 +1147,7 @@ def main() -> None:
             except Exception as e:
                 logger.error(f"分类URL获取线程出错: {e}")
 
-    logger.info(f"\n共收集到 {len(url_queue)} 个URL待处理\n")
+    logger.info(f"\n共收集到 {len(url_queue)} 个不重复的URL待处理\n")
 
     # 第二步：多线程处理所有URL（确保处理过程中URL为小写）
     logger.info("===== 开始多线程处理URL =====")
