@@ -3,7 +3,7 @@
 # @Author: Kinoko <i@linux.wf>
 # @Date  : 2025/07/25
 # @Desc  : SQL URL浏览器与截图工具（URL自动修正版）
-# @Func  : 从SQL文件中提取URL，批量获取网站信息并管理，自动修正URL域名不匹配问题
+# @Func  : 从SQL文件中提取URL，批量获取网站信息并管理，自动修正URL域名不匹配问题，支持URL编辑
 
 # 公共配置项
 # 截图重试配置
@@ -13,10 +13,9 @@ MAX_THREADS = 8  # 最大同时运行的线程数量
 
 # 分类映射关系
 CATEGORY_IDS = {
-    "ai": 1, "app": 1, "news": 2, "music": 3,
-    "tech": 4, "photos": 5, "life": 6, "education": 9,
-    "entertainment": 8, "shopping": 9, "social": 10, "read": 11,
-    "sports": 12, "finance": 13, "others": 14
+    "生活": 1, "资讯": 2, "社交": 3, "购物": 4, "影音": 5,
+    "阅读": 6, "游戏": 7, "应用": 8, "学习": 9, "设计": 10,
+    "开发": 11, "职场": 12, "金融": 13, "体育": 14, "其他": 15
 }
 ID_TO_CATEGORY = {v: k for k, v in CATEGORY_IDS.items()}  # 反向映射：ID到分类名称
 
@@ -38,6 +37,7 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
+from urllib.parse import urlparse  # 新增：用于解析URL
 
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from reportlab.graphics import renderPM
@@ -85,6 +85,7 @@ class SQLURLBrowser:
         # 临时时存储 - 这些将被自动保存
         self.temp_title_changes = {}  # {id: new_title}
         self.temp_desc_changes = {}  # {id: new_desc}
+        self.temp_url_changes = {}  # 新增：{id: new_url} 存储URL修改
         self.items_to_discard = set()  # 待丢弃的项ID
 
         # 历史记录文件路径
@@ -262,6 +263,11 @@ class SQLURLBrowser:
         self.clear_history_button = ttk.Button(self.action_frame, text="清空记录", command=self.clear_history)
         self.clear_history_button.pack(side=tk.LEFT, padx=5)
 
+        # 新增：添加刷新截图按钮
+        self.refresh_screenshot_button = ttk.Button(self.action_frame, text="刷新截图",
+                                                    command=self.refresh_screenshot, state=tk.DISABLED)
+        self.refresh_screenshot_button.pack(side=tk.LEFT, padx=5)
+
     def create_result_frame(self):
         """创建结果展示区域"""
         self.result_frame = ttk.LabelFrame(self.main_frame, text="结果展示", padding="10")
@@ -308,6 +314,22 @@ class SQLURLBrowser:
         self.title_entry = ttk.Entry(self.title_frame, textvariable=self.title_var, width=50)
         self.title_entry.pack(fill=tk.X, padx=5, pady=5)
 
+        # URL编辑区域 - 新增
+        self.edit_url_frame = ttk.LabelFrame(self.right_frame, text="URL（可修改）", padding="5")
+        self.edit_url_frame.pack(fill=tk.X, pady=5)
+
+        self.edit_url_var = tk.StringVar()
+        self.edit_url_entry = ttk.Entry(self.edit_url_frame, textvariable=self.edit_url_var, width=50)
+        self.edit_url_entry.pack(fill=tk.X, padx=5, pady=5)
+
+        # 域名显示区域 - 新增
+        self.domain_frame = ttk.LabelFrame(self.right_frame, text="域名（自动提取）", padding="5")
+        self.domain_frame.pack(fill=tk.X, pady=5)
+
+        self.domain_var = tk.StringVar()
+        self.domain_label = ttk.Label(self.domain_frame, textvariable=self.domain_var, anchor=tk.W)
+        self.domain_label.pack(fill=tk.X, padx=5, pady=5)
+
         # 描述编辑区域
         self.desc_frame = ttk.LabelFrame(self.right_frame, text="网站描述（可修改）", padding="5")
         self.desc_frame.pack(fill=tk.X, pady=5)
@@ -315,13 +337,13 @@ class SQLURLBrowser:
         self.desc_text = ScrolledText(self.desc_frame, wrap=tk.WORD, width=40, height=3)
         self.desc_text.pack(fill=tk.X, padx=5, pady=5)
 
-        # URL信息区域
-        self.url_frame = ttk.LabelFrame(self.right_frame, text="URL信息", padding="5")
-        self.url_frame.pack(fill=tk.X, pady=5)
+        # 原始URL信息区域（不可编辑）
+        self.original_url_frame = ttk.LabelFrame(self.right_frame, text="原始URL", padding="5")
+        self.original_url_frame.pack(fill=tk.X, pady=5)
 
-        self.url_var = tk.StringVar()
-        self.url_label = ttk.Label(self.url_frame, textvariable=self.url_var, anchor=tk.W)
-        self.url_label.pack(fill=tk.X, padx=5, pady=5)
+        self.original_url_var = tk.StringVar()
+        self.original_url_label = ttk.Label(self.original_url_frame, textvariable=self.original_url_var, anchor=tk.W)
+        self.original_url_label.pack(fill=tk.X, padx=5, pady=5)
 
         # SQL展示区域
         self.sql_frame = ttk.LabelFrame(self.right_frame, text="SQL语句", padding="5")
@@ -349,10 +371,14 @@ class SQLURLBrowser:
         # 截图区域大小变化事件
         self.screenshot_canvas.bind("<Configure>", self.on_canvas_configure)
 
-        # 标题和描述编辑事件
+        # 标题、URL和描述编辑事件
         self.title_entry.bind("<Return>", self.update_title)
         self.desc_text.bind("<FocusOut>", self.update_desc)
         self.desc_text.bind("<KeyRelease>", self.update_desc)
+
+        # 新增：URL编辑事件
+        self.edit_url_entry.bind("<Return>", self.update_url)
+        self.edit_url_entry.bind("<FocusOut>", self.update_url)
 
         # 键盘事件
         self.root.bind("<Up>", self.on_up_key)
@@ -368,6 +394,16 @@ class SQLURLBrowser:
         # 当画布大小改变时，重新调整当前显示的截图
         if self.current_id and self.current_id in self.url_data:
             self.load_screenshot(self.url_data[self.current_id].copy())
+
+    # 新增：从URL提取域名
+    def extract_domain(self, url):
+        """从URL中提取域名"""
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc.lower()
+        except Exception as e:
+            logger.error(f"提取域名失败: {str(e)}")
+            return ""
 
     # 文件处理方法
     def browse_file(self):
@@ -415,6 +451,12 @@ class SQLURLBrowser:
             self.id_list.clear()
             self.current_id = None
 
+            # 清空临时存储
+            self.temp_title_changes.clear()
+            self.temp_desc_changes.clear()
+            self.temp_url_changes.clear()  # 新增
+            self.items_to_discard.clear()
+
             # 读取并解析SQL文件
             with open(sql_file, 'r', encoding='utf-8') as f:
                 sql_content = f.read()
@@ -443,16 +485,19 @@ class SQLURLBrowser:
                     url = match.group(3)
                     tips = match.group(9)
                     category_id = int(match.group(8))
+                    domain = match.group(10)  # 提取原始domain
 
                     # 标准化初始URL格式
-                    url = self.normalize_url(url)
+                    normalized_url = self.normalize_url(url)
 
                     category = ID_TO_CATEGORY.get(category_id, "未知")
                     icon_file = os.path.basename(src)
                     screenshot_file = f"screenshot_{item_id}.png"
 
                     self.url_data[item_id] = {
-                        "id": item_id, "name": name, "src": src, "url": url,
+                        "id": item_id, "name": name, "src": src, "url": normalized_url,
+                        "original_url": url,  # 存储原始URL
+                        "domain": domain,  # 存储原始domain
                         "tips": tips, "icon_file": icon_file, "screenshot_file": screenshot_file,
                         "sql": match.group(0), "processed": False, "status": "未处理",
                         "title": "", "screenshot_path": os.path.join(self.screenshot_dir, screenshot_file),
@@ -514,7 +559,6 @@ class SQLURLBrowser:
             url = f'https://{url}'
 
         # 解析URL，提取域名
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         domain = parsed.netloc
 
@@ -553,6 +597,9 @@ class SQLURLBrowser:
             # 重置显示
             self.browser_title_var.set("")
             self.title_var.set("")
+            self.edit_url_var.set("")  # 新增
+            self.domain_var.set("")  # 新增
+            self.original_url_var.set("")  # 新增
             self.desc_text.delete(1.0, tk.END)
             self.url_var.set("")
             self.sql_text.delete(1.0, tk.END)
@@ -560,6 +607,7 @@ class SQLURLBrowser:
             self.icon_label.image = None
             self.screenshot_label.config(image="", text="无数据")
             self.screenshot_label.image = None
+            self.refresh_screenshot_button.config(state=tk.DISABLED)  # 新增
             return
 
         data = self.url_data[self.current_id]
@@ -569,11 +617,19 @@ class SQLURLBrowser:
         # 应用历史修改
         self.title_var.set(self.temp_title_changes.get(self.current_id, data["name"]))
 
+        # 新增：URL相关显示
+        current_url = self.temp_url_changes.get(self.current_id, data["url"])
+        self.edit_url_var.set(current_url)
+        self.original_url_var.set(data["original_url"])
+
+        # 新增：显示域名
+        domain = self.extract_domain(current_url)
+        self.domain_var.set(domain)
+
         self.desc_text.delete(1.0, tk.END)
         # 应用历史修改
         self.desc_text.insert(tk.END, self.temp_desc_changes.get(self.current_id, data["tips"]))
 
-        self.url_var.set(data["url"])
         self.sql_text.delete(1.0, tk.END)
         self.sql_text.insert(tk.END, data["sql"])
 
@@ -589,6 +645,7 @@ class SQLURLBrowser:
         if self.current_id is None or self.current_id not in self.url_data:
             self.discard_button.config(state=tk.DISABLED)
             self.save_button.config(state=tk.DISABLED)
+            self.refresh_screenshot_button.config(state=tk.DISABLED)  # 新增
             return
 
         data = self.url_data[self.current_id]
@@ -605,6 +662,10 @@ class SQLURLBrowser:
             for item_id, item in self.url_data.items()
         )
         self.save_button.config(state=tk.NORMAL if has_savable else tk.DISABLED)
+
+        # 新增：更新刷新截图按钮状态
+        self.refresh_screenshot_button.config(
+            state=tk.NORMAL if not self.current_id in self.items_to_discard else tk.DISABLED)
 
     def load_icon(self, data):
         """加载并显示图标"""
@@ -721,6 +782,90 @@ class SQLURLBrowser:
         else:
             self.screenshot_label.config(text="获取失败" if data.get("status") == "获取失败" else "无截图")
 
+    # 新增：刷新当前URL的截图
+    def refresh_screenshot(self):
+        """刷新当前URL的截图"""
+        if self.current_id is None or self.current_id in self.items_to_discard:
+            return
+
+        data = self.url_data[self.current_id]
+        current_url = self.temp_url_changes.get(self.current_id, data["url"])
+
+        # 更新状态显示
+        self.status_var.set(f"正在刷新 {current_url} 的截图...")
+
+        # 删除旧截图
+        if os.path.exists(data["screenshot_path"]):
+            try:
+                os.remove(data["screenshot_path"])
+                logger.info(f"已删除旧截图: {data['screenshot_path']}")
+            except Exception as e:
+                logger.warning(f"无法删除旧截图: {str(e)}")
+
+        # 重新获取截图
+        def fetch_single_screenshot():
+            browser = None
+            success = False
+
+            try:
+                # 创建浏览器实例
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+
+                browser = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()),
+                    options=chrome_options
+                )
+
+                # 获取页面
+                browser.get(current_url)
+                time.sleep(5)  # 等待页面加载完成
+
+                # 截取屏幕
+                browser.save_screenshot(data["screenshot_path"])
+                logger.info(f"成功保存新截图到: {data['screenshot_path']}")
+
+                # 添加标题到截图
+                self.add_title_to_screenshot(data["screenshot_path"], browser.title)
+
+                # 更新标题信息
+                title = browser.title
+                success = True
+
+                # 更新UI
+                def update_ui():
+                    self.url_data[self.current_id]["title"] = title
+                    self.url_data[self.current_id]["processed"] = True
+                    self.url_data[self.current_id]["status"] = "已刷新"
+
+                    if self.url_tree.exists(self.current_id):
+                        values = list(self.url_tree.item(self.current_id, "values"))
+                        values[4] = "已刷新"
+                        self.url_tree.item(self.current_id, values=values)
+
+                    self.browser_title_var.set(title)
+                    self.load_screenshot(self.url_data[self.current_id].copy())
+                    self.status_var.set(f"已刷新 {current_url} 的截图")
+
+                self.root.after(0, update_ui)
+
+            except Exception as e:
+                logger.error(f"刷新截图失败: {str(e)}")
+                self.root.after(0, lambda: self.status_var.set(f"刷新截图失败: {str(e)[:30]}..."))
+            finally:
+                if browser:
+                    try:
+                        browser.quit()
+                    except Exception as e:
+                        logger.warning(f"关闭浏览器失败: {str(e)}")
+
+        # 在新线程中执行，避免UI卡顿
+        threading.Thread(target=fetch_single_screenshot).start()
+
     # 网站信息获取方法
     def fetch_all_site_info(self):
         """批量获取所有网站的信息和截图"""
@@ -735,7 +880,7 @@ class SQLURLBrowser:
             if item_id not in self.items_to_discard:
                 item["processed"] = False
                 # 如果没有历史修改，重置状态
-                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes and item_id not in self.temp_url_changes:
                     item["status"] = "未处理"
                 item["title"] = ""
                 # 清除旧截图
@@ -769,7 +914,9 @@ class SQLURLBrowser:
                     self.root.after(0, lambda p=processed[0] / total * 100: self.progress_var.set(p))
                     continue
 
-                self.thread_pool.submit(self.fetch_site_info, item_id, processed, total)
+                # 使用可能已编辑的URL
+                url = self.temp_url_changes.get(item_id, self.url_data[item_id]["url"])
+                self.thread_pool.submit(self.fetch_site_info, item_id, url, processed, total)
 
             # 等待所有任务完成
             while processed[0] < total:
@@ -789,7 +936,7 @@ class SQLURLBrowser:
         threading.Thread(target=batch_fetch).start()
         self.status_var.set("正在批量获取网站信息...")
 
-    def fetch_site_info(self, item_id, processed, total):
+    def fetch_site_info(self, item_id, target_url, processed, total):
         """获取单个网站的信息和截图（带URL自动修正功能）"""
         # 首先检查是否为已丢弃项，如果是则直接返回
         if item_id in self.items_to_discard:
@@ -801,7 +948,6 @@ class SQLURLBrowser:
             return
 
         data = self.url_data[item_id].copy()
-        target_url = data["url"]  # 记录目标URL用于验证
 
         success = False
         error_msg = ""
@@ -880,8 +1026,8 @@ class SQLURLBrowser:
                     # 更新成功状态（包含URL修正逻辑）
                     def update_success():
                         if item_id in self.url_data:
-                            # 如果需要更新URL
-                            if url_needs_update:
+                            # 如果需要更新URL且用户没有手动编辑过URL
+                            if url_needs_update and item_id not in self.temp_url_changes:
                                 self.url_data[item_id]["url"] = new_url
                                 logger.info(f"已自动修正URL (ID: {item_id}): {target_url} -> {new_url}")
 
@@ -895,7 +1041,7 @@ class SQLURLBrowser:
                                     self.url_tree.item(item_id, values=values)
                             else:
                                 # 如果没有历史修改，更新状态
-                                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                                if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes and item_id not in self.temp_url_changes:
                                     self.url_data[item_id]["status"] = "已获取"
                                     if self.url_tree.exists(item_id):
                                         values = list(self.url_tree.item(item_id, "values"))
@@ -936,14 +1082,14 @@ class SQLURLBrowser:
             def update_error_ui():
                 if item_id in self.url_data:
                     # 如果没有历史修改，更新状态
-                    if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                    if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes and item_id not in self.temp_url_changes:
                         self.url_data[item_id]["status"] = "获取失败"
                     self.url_data[item_id]["processed"] = True
 
                     if self.url_tree.exists(item_id):
                         values = list(self.url_tree.item(item_id, "values"))
                         # 如果没有历史修改，更新状态
-                        if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes:
+                        if item_id not in self.temp_title_changes and item_id not in self.temp_desc_changes and item_id not in self.temp_url_changes:
                             values[4] = "获取失败"
                         self.url_tree.item(item_id, values=values)
 
@@ -1017,7 +1163,8 @@ class SQLURLBrowser:
             return
 
         data = self.url_data[self.current_id]
-        url = data["url"]
+        # 使用可能已编辑的URL
+        url = self.temp_url_changes.get(self.current_id, data["url"])
 
         if not url:
             messagebox.showinfo("提示", "无效的URL")
@@ -1146,6 +1293,46 @@ class SQLURLBrowser:
             # 自动保存修改记录
             self.save_history()
 
+    # 新增：更新URL
+    def update_url(self, event=None):
+        """更新URL"""
+        if self.current_id is None or self.current_id not in self.url_data:
+            return
+
+        new_url = self.edit_url_var.get().strip()
+        if not new_url:
+            messagebox.showinfo("提示", "URL不能为空")
+            return
+
+        # 标准化URL
+        normalized_new_url = self.normalize_url(new_url)
+
+        data = self.url_data[self.current_id]
+        old_url = self.temp_url_changes.get(self.current_id, data["url"])
+
+        if normalized_new_url != old_url:
+            self.temp_url_changes[self.current_id] = normalized_new_url
+
+            # 更新域名显示
+            new_domain = self.extract_domain(normalized_new_url)
+            self.domain_var.set(new_domain)
+
+            # 更新Treeview
+            if self.url_tree.exists(self.current_id):
+                values = list(self.url_tree.item(self.current_id, "values"))
+                values[2] = normalized_new_url
+                values[4] = "已修改"
+                self.url_tree.item(self.current_id, values=values)
+
+            data["status"] = "已修改"
+            data["processed"] = True
+
+            self.status_var.set(f"URL已修改（未保存）")
+            logger.info(f"已修改URL (ID: {self.current_id}): {old_url} -> {normalized_new_url}")
+            self.update_button_states()
+            # 自动保存修改记录
+            self.save_history()
+
     def update_desc(self, event=None):
         """更新网站描述"""
         if self.current_id is None or self.current_id not in self.url_data:
@@ -1261,10 +1448,11 @@ class SQLURLBrowser:
 
                 for item in items_to_save:
                     current_sql = item["sql"]
+                    item_id = item["id"]
 
                     # 应用标题修改
-                    if item["id"] in self.temp_title_changes:
-                        new_title = self.temp_title_changes[item["id"]]
+                    if item_id in self.temp_title_changes:
+                        new_title = self.temp_title_changes[item_id]
                         sql_pattern = re.compile(
                             r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\()'[^']*'(,\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*[^,]*, \s*[^,]*, \s*'[^']*', \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^)]*\);)",
                             re.IGNORECASE)
@@ -1273,21 +1461,37 @@ class SQLURLBrowser:
                         if sql_match:
                             current_sql = f"{sql_match.group(1)}'{new_title}'{sql_match.group(2)}"
 
-                    # 应用URL修改
+                    # 应用URL和domain修改
                     original_url = re.search(r"INSERT.*?VALUES.*?'[^']*',\s*'[^']*',\s*'([^']+)'", current_sql,
                                              re.IGNORECASE).group(1)
-                    if item["url"] != original_url:
+
+                    # 获取最终URL（考虑用户编辑）
+                    final_url = self.temp_url_changes.get(item_id, item["url"])
+
+                    if final_url != original_url:
+                        # 更新URL
                         sql_pattern = re.compile(
                             r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^']*',\s*'[^']*',\s*')([^']*)'(,\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*[^,]*, \s*[^,]*, \s*'[^']*', \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^)]*\);)",
                             re.IGNORECASE)
                         sql_match = sql_pattern.match(current_sql)
 
                         if sql_match:
-                            current_sql = f"{sql_match.group(1)}{item['url']}{sql_match.group(2)}"
+                            current_sql = f"{sql_match.group(1)}{final_url}{sql_match.group(2)}"
+
+                        # 更新domain
+                        new_domain = self.extract_domain(final_url)
+                        sql_pattern = re.compile(
+                            r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*'[^']*', \s*')([^']*)'(\s*,\s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
+                            re.IGNORECASE)
+                        sql_match = sql_pattern.match(current_sql)
+
+                        if sql_match:
+                            current_sql = f"{sql_match.group(1)}{new_domain}{sql_match.group(2)}"
+                            logger.info(f"已更新ID {item_id} 的domain为: {new_domain}")
 
                     # 应用描述修改
-                    if item["id"] in self.temp_desc_changes:
-                        new_desc = self.temp_desc_changes[item["id"]]
+                    if item_id in self.temp_desc_changes:
+                        new_desc = self.temp_desc_changes[item_id]
                         sql_pattern = re.compile(
                             r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
                             re.IGNORECASE)
@@ -1301,6 +1505,7 @@ class SQLURLBrowser:
             # 清空临时数据
             self.temp_title_changes.clear()
             self.temp_desc_changes.clear()
+            self.temp_url_changes.clear()  # 新增
             self.items_to_discard.clear()
 
             # 清除历史记录
@@ -1308,7 +1513,7 @@ class SQLURLBrowser:
 
             # 更新状态
             for item_id, item in self.url_data.items():
-                if item["processed"] and item["status"] in ["已修改", "已修正"]:
+                if item["processed"] and item["status"] in ["已修改", "已修正", "已刷新"]:
                     item["status"] = "已保存"
                     if self.url_tree.exists(item_id):
                         values = list(self.url_tree.item(item_id, "values"))
@@ -1333,6 +1538,16 @@ class SQLURLBrowser:
             if item_id in self.url_data and self.url_tree.exists(item_id):
                 values = list(self.url_tree.item(item_id, "values"))
                 values[1] = new_title
+                values[4] = "已修改"
+                self.url_tree.item(item_id, values=values)
+                self.url_data[item_id]["status"] = "已修改"
+                self.url_data[item_id]["processed"] = True
+
+        # 应用URL修改 - 新增
+        for item_id, new_url in self.temp_url_changes.items():
+            if item_id in self.url_data and self.url_tree.exists(item_id):
+                values = list(self.url_tree.item(item_id, "values"))
+                values[2] = new_url
                 values[4] = "已修改"
                 self.url_tree.item(item_id, values=values)
                 self.url_data[item_id]["status"] = "已修改"
@@ -1365,6 +1580,7 @@ class SQLURLBrowser:
             history_data = {
                 "temp_title_changes": self.temp_title_changes,
                 "temp_desc_changes": self.temp_desc_changes,
+                "temp_url_changes": self.temp_url_changes,  # 新增
                 "items_to_discard": list(self.items_to_discard)
             }
 
@@ -1394,6 +1610,11 @@ class SQLURLBrowser:
                 int(k): v for k, v in history_data.get("temp_desc_changes", {}).items()
                 if isinstance(k, (str, int)) and v and isinstance(v, str)
             }
+            # 新增：加载URL修改记录
+            self.temp_url_changes = {
+                int(k): v for k, v in history_data.get("temp_url_changes", {}).items()
+                if isinstance(k, (str, int)) and v and isinstance(v, str)
+            }
             self.items_to_discard = set(
                 int(id) for id in history_data.get("items_to_discard", [])
                 if isinstance(id, (str, int))
@@ -1401,6 +1622,7 @@ class SQLURLBrowser:
 
             logger.info(f"已加载历史记录，包含 {len(self.temp_title_changes)} 个标题修改，"
                         f"{len(self.temp_desc_changes)} 个描述修改，"
+                        f"{len(self.temp_url_changes)} 个URL修改，"  # 新增
                         f"{len(self.items_to_discard)} 个丢弃项")
 
             # 加载历史记录后立即更新UI
@@ -1424,6 +1646,7 @@ class SQLURLBrowser:
 
             self.temp_title_changes.clear()
             self.temp_desc_changes.clear()
+            self.temp_url_changes.clear()  # 新增
             self.items_to_discard.clear()
 
             # 更新UI
@@ -1431,8 +1654,9 @@ class SQLURLBrowser:
                 if self.url_tree.exists(item_id):
                     values = list(self.url_tree.item(item_id, "values"))
                     # 恢复原始状态
-                    if item["status"] in ["已修改", "已丢弃"]:
+                    if item["status"] in ["已修改", "已丢弃", "已刷新"]:
                         values[1] = item["name"]
+                        values[2] = item["url"]  # 恢复原始URL
                         values[4] = "未处理" if not item["processed"] else "已获取"
                         self.url_tree.item(item_id, values=values)
                         item["status"] = "未处理" if not item["processed"] else "已获取"
