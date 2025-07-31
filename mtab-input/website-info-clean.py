@@ -9,7 +9,7 @@
 # 截图重试配置
 SCREENSHOT_MAX_RETRIES = 3  # 最大重试次数
 SCREENSHOT_RETRY_DELAY = 2  # 重试延迟（秒）
-MAX_THREADS = 4  # 最大同时运行的线程数量
+MAX_THREADS = 8  # 最大同时运行的线程数量
 
 # 分类映射关系
 CATEGORY_IDS = {
@@ -22,11 +22,11 @@ ID_TO_CATEGORY = {v: k for k, v in CATEGORY_IDS.items()}  # 反向映射：ID到
 
 # 域名白名单配置
 DOMAIN_WHITELIST = [
-    "google.com", "yandex.com"
+    "google.com", "yandex.com", "gmail.com"
 ]
 
-import json
 # 导入模块
+import json
 import logging
 import os
 import queue

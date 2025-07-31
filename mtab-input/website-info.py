@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
-# @Date  : 2025/07/24
-# @Desc  : mTab多分类网站书签书签导入工具（AI）
-# @Func  : 批量获取多分类网站信息，处理URL去重、AI生成标题和描述、图标下载转换压缩SVG，最终生成SQL导入语句
+# @Date  : 2025/08/01
+# @Desc  : mTab多分类网站书签导入工具（AI）
+# @Func  : 批量获取网站信息，处理URL去重、AI生成标题、描述和分类，图标下载转换压缩SVG，生成JSON和SQL导入语句
 
 
 # ============================== 公共配置参数区 ==============================
@@ -21,28 +21,32 @@ AI_CONFIG = {
     "retry_delay": 1  # 重试延迟时间(秒)
 }
 
-# 分类配置 - 原始顺序
+# 分类配置
 CATEGORIES = [
-    "others", "ai", "app", "news", "music", "tech", "photos", "life", "education",
-    "entertainment", "shopping", "social", "read", "sports", "finance"
+    "ai", "app", "news", "music", "tech", "photos", "life", "education",
+    "entertainment", "shopping", "social", "read", "sports", "finance", "others"
 ]
-# 反向顺序
-REVERSED_CATEGORIES = list(reversed(CATEGORIES))
-
 CATEGORY_IDS = {
-    "ai": 1, "app": 1, "news": 2, "music": 3,
-    "tech": 4, "photos": 5, "life": 6, "education": 9,
-    "entertainment": 8, "shopping": 9, "social": 10, "read": 11,
-    "sports": 12, "finance": 13, "others": 14
+    "应用&工具&AI": 1, "新闻&资讯": 2, "影音&媒体": 3, "科技&编程&技术&文档&Web&框架&开发": 4, "图片&设计&素材": 5,
+    "生活&出行&地图&交通": 6, "教育&学习&课程&大学": 7, "游戏&娱乐": 8, "购物&消费": 9, "社交&论坛&邮箱&社区": 10,
+    "阅读&百科&漫画&小说": 11, "体育&运动": 12, "金融&投资&银行": 13, "其他": 14
 }
+
+# 供AI参考的分类列表
+AI_CATEGORY_OPTIONS = list(CATEGORY_IDS.keys())
 
 # 域名过滤配置
 DOMAIN_BLACKLIST = {
     "trae.cn", "trae.ai", "js.design", "zenvideo.qq.com"
 }
 DOMAIN_WHITELIST = {
-    "x.com", "qq.com", "google.com", "github.com", "youtube.com", "facebook.com",
-    "www.iqiyi.com", "yiyan.baidu.com", "outlook.live.com"
+    "x.com", "qq.com", "gmail.com", "google.com", "github.com", "youtube.com", "facebook.com",
+    "yandex.com", "www.iqiyi.com", "yiyan.baidu.com", "outlook.live.com"
+}
+
+# 域名映射配置 - 键为需要映射的域名或URL，值为目标域名或URL
+DOMAIN_MAPPING = {
+    "https://tj.shshinfo.com/tz/pcw/kimi10.html": "https://www.kimi.com",
 }
 
 # 网络请求配置
@@ -72,6 +76,7 @@ REDIRECT_CONFIG = {
 # 文件路径配置
 ICON_DIRECTORY = 'icons'
 SQL_OUTPUT_FILE = "mtab_import.sql"
+JSON_OUTPUT_FILE = "mtab_data.json"
 
 # 图片下载配置
 MAX_IMAGE_RETRIES = 3  # 最大重试次数
@@ -91,7 +96,7 @@ import time
 from base64 import b64encode
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import List, Dict, Set, Tuple, Optional
 from urllib.parse import quote, urlparse, urljoin
 
@@ -116,7 +121,8 @@ class WebsiteData:
     description: str  # 网站描述（AI生成）
     img_src: str  # 图标原始URL
     local_filename: str  # 本地存储的图标文件名
-    category: str  # 所属分类
+    category: str  # 所属分类（中文）
+    category_id: int  # 分类ID
     background_color: str  # 背景颜色
 
 
@@ -161,10 +167,52 @@ logger = setup_logger()
 
 
 # ============================== URL处理工具函数 ==============================
+def apply_domain_mapping(url: str) -> str:
+    """应用域名映射规则，将URL转换为目标URL"""
+    url_lower = url.lower()
+
+    # 检查完整URL匹配
+    if url_lower in DOMAIN_MAPPING:
+        mapped_url = DOMAIN_MAPPING[url_lower]
+        logger.info(f"URL映射: {url_lower} -> {mapped_url}")
+        return mapped_url
+
+    # 检查域名级别匹配
+    parsed = urlparse(url_lower)
+    domain = parsed.netloc
+
+    # 检查子域名+主域名匹配
+    if domain in DOMAIN_MAPPING:
+        mapped_domain = DOMAIN_MAPPING[domain]
+        mapped_parsed = urlparse(mapped_domain)
+        # 保留路径和参数，但使用新的域名和协议
+        new_url = urljoin(mapped_domain, parsed.path)
+        if parsed.query:
+            new_url += f"?{parsed.query}"
+        logger.info(f"域名映射: {domain} -> {mapped_domain}, 完整URL: {url_lower} -> {new_url}")
+        return new_url
+
+    # 检查主域名匹配
+    ext = extract(domain)
+    main_domain = f"{ext.domain}.{ext.suffix}"
+    if main_domain in DOMAIN_MAPPING:
+        mapped_domain = DOMAIN_MAPPING[main_domain]
+        # 替换主域名但保留子域名
+        subdomain = ext.subdomain
+        new_netloc = f"{subdomain}.{mapped_domain}" if subdomain else mapped_domain
+        new_url = f"{parsed.scheme}://{new_netloc}{parsed.path}"
+        if parsed.query:
+            new_url += f"?{parsed.query}"
+        logger.info(f"主域名映射: {main_domain} -> {mapped_domain}, 完整URL: {url_lower} -> {new_url}")
+        return new_url
+
+    # 无匹配的映射规则
+    return url_lower
+
+
 def normalize_url(url: str) -> str:
     """标准化URL格式并转换为小写"""
     parsed = urlparse(url)
-    # 对URL各部分进行小写处理
     normalized = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path}".rstrip('/')
     return normalized
 
@@ -181,7 +229,6 @@ def is_domain_whitelisted(url: str) -> bool:
     domain_parts = [part for part in [ext.subdomain, ext.domain, ext.suffix] if part]
     full_domain = ".".join(domain_parts).lower()
 
-    # 检查完整域名、主域名及所有父域名（均转为小写）
     if full_domain in DOMAIN_WHITELIST:
         return True
     if ext.registered_domain.lower() in DOMAIN_WHITELIST:
@@ -197,7 +244,6 @@ def is_domain_blocked(url: str) -> bool:
     domain = extract_domain(url).lower()
     parts = domain.split('.')
 
-    # 检查完整域名及所有父域名（均转为小写）
     if domain in DOMAIN_BLACKLIST:
         return True
     for i in range(len(parts) - 1):
@@ -208,7 +254,6 @@ def is_domain_blocked(url: str) -> bool:
 
 def is_url_acceptable(url: str) -> Tuple[bool, str]:
     """检查URL是否符合处理条件（使用小写URL检查）"""
-    # 先将URL转为小写再检查
     lower_url = url.lower()
     if is_domain_blocked(lower_url):
         return False, f"URL在黑名单中: {extract_domain(lower_url)}"
@@ -217,7 +262,6 @@ def is_url_acceptable(url: str) -> Tuple[bool, str]:
 
 def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     """验证并处理URL格式（确保返回小写URL）"""
-    # 先将URL转为小写
     url = url.lower()
 
     if not url.startswith(('http://', 'https://')):
@@ -226,7 +270,7 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # 强制使用HTTPS（小写）
+    # 强制使用HTTPS
     if base_url.startswith('http://'):
         base_url = base_url.replace('http://', 'https://')
 
@@ -240,17 +284,10 @@ def validate_and_process_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
-    """
-    根据跳转历史选择最优URL（返回小写URL）
-    1. 仅对主域名相同（包括不同后缀）的URL应用后续规则
-    2. 同一主域名下，优先保留带www的URL；
-    3. 若后缀长度不同（如.com vs .com.hk），保留后缀最短的URL；
-    4. 若无www且后缀长度相同，保留最早出现的URL
-    """
+    """根据跳转历史选择最优URL（返回小写URL）"""
     if not redirect_history:
         return original_url.lower()
 
-    # 解析所有URL的域名信息（转为小写）
     url_info = []
     for url in redirect_history:
         url_lower = url.lower()
@@ -260,104 +297,97 @@ def get_preferred_url(original_url: str, redirect_history: List[str]) -> str:
 
         url_info.append({
             "url": url_lower,
-            "main_domain": ext.domain.lower(),  # 核心主域名（如google、baidu）
-            "registered_domain": ext.registered_domain.lower(),  # 带后缀的域名
+            "main_domain": ext.domain.lower(),
+            "registered_domain": ext.registered_domain.lower(),
             "subdomain": ext.subdomain.lower(),
             "is_www": ext.subdomain.lower() == "www",
             "suffix": ext.suffix.lower(),
             "suffix_length": len(ext.suffix.split('.'))
         })
 
-    # 获取第一个URL的主域名作为基准
     base_main_domain = url_info[0]["main_domain"]
-    # 筛选出主域名相同的URL（核心主域一致，允许不同后缀）
     same_main_domain_urls = [
         info for info in url_info
         if info["main_domain"] == base_main_domain
     ]
 
-    # 如果存在主域名不同的URL，直接返回最终跳转URL（小写）
     if len(same_main_domain_urls) != len(url_info):
         return redirect_history[-1].lower()
 
-    # 1. 优先保留带www的URL
+    # 优先保留带www的URL
     www_urls = [info for info in same_main_domain_urls if info["is_www"]]
     if www_urls:
-        # 带www时选择后缀最短的
         www_urls_sorted = sorted(www_urls, key=lambda x: x["suffix_length"])
         return www_urls_sorted[0]["url"]
 
-    # 2. 无www时保留后缀最短的URL
+    # 无www时保留后缀最短的URL
     non_www_urls_sorted = sorted(same_main_domain_urls, key=lambda x: x["suffix_length"])
     shortest_suffix_urls = [
         info for info in non_www_urls_sorted
         if info["suffix_length"] == non_www_urls_sorted[0]["suffix_length"]
     ]
 
-    # 3. 后缀长度相同时保留最早出现的URL
+    # 后缀长度相同时保留最早出现的URL
     return shortest_suffix_urls[0]["url"]
 
 
 def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
-    """
-    跟踪URL跳转，包括HTTP重定向和JS跳转（返回小写URL）
-    返回最终URL、状态码、状态描述和跳转历史
-    """
+    """跟踪URL跳转，包括HTTP重定向和JS跳转（返回小写URL）"""
+    # 首先应用域名映射
+    url = apply_domain_mapping(url)
+
     visited_urls = set()
-    current_url = url.lower()  # 初始URL转为小写
+    current_url = url.lower()
     redirect_history = [current_url]
     redirect_count = 0
 
     while redirect_count < REDIRECT_CONFIG['max_redirects']:
         if current_url in visited_urls:
-            # 检测到循环跳转，返回当前URL（小写）
             return current_url, 302, f"循环跳转 detected after {redirect_count} steps", redirect_history
         visited_urls.add(current_url)
 
         try:
-            # 发送请求检查状态和可能的跳转
             response = requests.get(
                 current_url,
                 headers=HTTP_CONFIG['headers'],
                 timeout=HTTP_CONFIG['timeout'],
                 allow_redirects=False,
-                stream=True  # 不下载完整内容，提高效率
+                stream=True
             )
 
             # 处理HTTP重定向
             if 300 <= response.status_code < 400 and 'Location' in response.headers:
-                next_url = response.headers['Location'].lower()  # 跳转URL转为小写
-                # 处理相对路径
+                next_url = response.headers['Location'].lower()
                 next_url = urljoin(current_url, next_url)
+                # 对重定向的URL也应用映射规则
+                next_url = apply_domain_mapping(next_url)
                 logger.info(f"HTTP重定向: {current_url} -> {next_url}")
                 current_url = next_url
                 redirect_history.append(current_url)
                 redirect_count += 1
                 continue
 
-            # 处理JS跳转 (检测常见的JS跳转模式)
+            # 处理JS跳转
             if response.status_code == 200 and 'text/html' in response.headers.get('Content-Type', ''):
-                # 只读取部分内容来检测JS跳转，提高效率
                 content = response.raw.read(8192).decode('utf-8', errors='ignore')
 
                 for pattern in REDIRECT_CONFIG['js_redirect_patterns']:
                     match = re.search(pattern, content, re.IGNORECASE)
                     if match:
-                        js_redirect_url = match.group(1).lower()  # JS跳转URL转为小写
-                        # 处理相对路径
+                        js_redirect_url = match.group(1).lower()
                         js_redirect_url = urljoin(current_url, js_redirect_url)
+                        # 对JS跳转的URL也应用映射规则
+                        js_redirect_url = apply_domain_mapping(js_redirect_url)
                         logger.info(f"JS跳转检测: {current_url} -> {js_redirect_url}")
                         current_url = js_redirect_url
                         redirect_history.append(current_url)
                         redirect_count += 1
-                        response.close()  # 关闭当前连接
+                        response.close()
                         break
                 else:
-                    # 没有找到JS跳转模式，结束跳转跟踪
                     return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
                 continue
 
-            # 如果没有更多跳转，返回当前URL和状态（小写）
             return current_url, response.status_code, f"最终URL，经过{redirect_count}次跳转", redirect_history
 
         except requests.exceptions.SSLError:
@@ -365,34 +395,30 @@ def follow_redirects(url: str) -> Tuple[str, int, str, List[str]]:
         except Exception as e:
             return current_url, 500, f"请求错误: {str(e)}", redirect_history
 
-    # 达到最大跳转次数（返回小写URL）
-    return current_url, 302, f"达到最大最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})", redirect_history
+    return current_url, 302, f"达到最大跳转次数 ({REDIRECT_CONFIG['max_redirects']})", redirect_history
 
 
 def check_url_accessibility(url: str) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
     """检查URL可访问性并处理跳转，返回最终小写URL"""
     try:
-        # 强制使用HTTPS并转为小写
         url = url.lower()
+        # 应用域名映射
+        url = apply_domain_mapping(url)
+
         if url.startswith('http://'):
             url = url.replace('http://', 'https://')
 
-        # 跟踪所有跳转，获取最终URL和跳转历史（均为小写）
         final_url, status_code, status_msg, redirect_history = follow_redirects(url)
-        # 应用URL优选逻辑（返回小写URL）
         preferred_url = get_preferred_url(url, redirect_history)
         logger.info(f"URL跳转跟踪结果: {preferred_url} (状态码: {status_code}, {status_msg})")
 
-        # 检查是否是HTTPS错误或500以上状态码
         if status_code == 495 or status_code >= 500:
             return False, f"URL访问失败: {status_msg} (状态码: {status_code})", url, None
 
-        # 检查URL是否符合处理条件（使用小写URL）
         is_acceptable, reason = is_url_acceptable(preferred_url)
         if not is_acceptable:
             return False, f"URL不符合处理条件: {reason}", url, None
 
-        # 验证最终URL格式（确保返回小写URL）
         processed_url, error = validate_and_process_url(preferred_url)
         if not processed_url:
             return False, f"URL格式验证失败: {error}", url, None
@@ -411,29 +437,26 @@ def is_valid_text(text: str) -> bool:
     if not text or not text.strip():
         return False
 
-    # 移除控制字符
     text_clean = re.sub(r'[\x00-\x1F\x7F]', '', text)
     if not text_clean:
         return False
 
-    # 定义有效字符集（中文、俄文、英文、数字、多语言常见标点）
     valid_chars = re.findall(
         r'[\u4e00-\u9fa5\u0400-\u04FFa-zA-Z0-9，。,.;:!?()（）《》“”‘’«»\s]',
         text_clean
     )
 
-    # 有效字符占比需超过50%
     return len(valid_chars) / len(text_clean) > 0.5
 
 
 def clean_html_entities(text: str) -> str:
     """清理HTML实体编码，保留单引号转换"""
-    text = text.replace('&#x27;', "'")  # 保留单引号
-    return re.sub(r'&#x[0-9a-fA-F]+;', '', text)  # 移除其他实体
+    text = text.replace('&#x27;', "'")
+    return re.sub(r'&#x[0-9a-fA-F]+;', '', text)
 
 
 def fetch_api(api, url: str) -> Optional[Dict[str, str]]:
-    """调用API获取取网站标题和描述（使用小写URL）"""
+    """调用API获取网站标题和描述"""
     try:
         encoded_url = quote(url)
         api_url = api['url_template'].format(encoded_url)
@@ -452,11 +475,10 @@ def fetch_api(api, url: str) -> Optional[Dict[str, str]]:
 
 
 def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
-    """通过多个API获取网站标题和描述（使用小写URL）"""
+    """通过多个API获取网站标题和描述"""
     if not url:
         return None
 
-    # 合并无效值集合
     invalid_values = {"null", "暂无标题", "暂无描述"}
 
     api_list = [
@@ -469,7 +491,6 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
             } if (desc := data.get('description', ''))
                  and (title := data.get('title', ''))
                  and data.get('code') == 1
-                 # 只要标题或描述中有一个不为空且有效，就接受
                  and (title.strip() and title not in invalid_values or
                       desc.strip() and desc not in invalid_values)
                  and (not desc.strip() or is_valid_text(desc))
@@ -484,7 +505,6 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
             } if (desc := data.get('description', ''))
                  and (title := data.get('title', ''))
                  and data.get('code') == 1
-                 # 只要标题或描述中有一个不为空且有效，就接受
                  and (title.strip() and title not in invalid_values or
                       desc.strip() and desc not in invalid_values)
                  and (not desc.strip() or is_valid_text(desc))
@@ -499,7 +519,6 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
             } if (desc := data.get('description', ''))
                  and (title := data.get('title', ''))
                  and data.get('code') == 1
-                 # 只要标题或描述中有一个不为空且有效，就接受
                  and (title.strip() and title not in invalid_values or
                       desc.strip() and desc not in invalid_values)
                  and (not desc.strip() or is_valid_text(desc))
@@ -513,7 +532,6 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
                 "description": desc
             } if (desc := data.get('data', {}).get('description', ''))
                  and (title := data.get('data', {}).get('title', ''))
-                 # 只要标题或描述中有一个不为空且有效，就接受
                  and (title.strip() and title not in invalid_values or
                       desc.strip() and desc not in invalid_values)
                  and (not desc.strip() or is_valid_text(desc))
@@ -521,11 +539,9 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
         }
     ]
 
-    # 尝试所有API获取信息（使用小写URL）
     for api in api_list:
         try:
             if website_info := fetch_api(api, url):
-                # 清理理标题和描述
                 cleaned_title = website_info["title"].strip().replace('\n', ' ').replace('\r', ' ')
                 cleaned_desc = website_info["description"].strip().replace('\n', ' ').replace('\r', ' ')
                 return {
@@ -540,14 +556,14 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
 
 
 def ask_openai(question: str) -> Optional[Dict[str, str]]:
-    """调用AI接口生成标题和描述（带重试机制）"""
-    # 定义消息类型
+    """调用AI接口生成标题、描述和分类（带重试机制）"""
     system_msg: ChatCompletionSystemMessageParam = {
         "role": "system",
-        "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题和中文描述。"
+        "content": "我会给你一个网址、网站标题和网站描述，帮我生成网站收藏的标题、中文描述和分类。"
                    "1. 标题要求简短最好一个词，优先从我给你的标题中取，不要翻译；"
-                   "2. 描述长度控制在120字符（varchar）内，尽量精简，描述语句不要有多余的空格和缺少标点符号，描述语句末尾不要带任何标点符号；"
-                   "返回给我内容要求两个字段 title、description 的JSON格式。"
+                   "2. 描述长度控制在120字符内，尽量精简，不要有多余空格，末尾不要带标点；"
+                   "3. 分类必须从以下选项中选择一个：" + str(AI_CATEGORY_OPTIONS) + "，如果未找到则返回 其他；"
+                                                                                   "返回给我包含三个字段 title、description、category 的JSON格式。"
     }
 
     user_msg: ChatCompletionUserMessageParam = {
@@ -557,7 +573,6 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
 
     messages: List[ChatCompletionMessageParam] = [system_msg, user_msg]
 
-    # 带指数退避的重试机制
     for attempt in range(1, AI_CONFIG["max_retries"] + 1):
         try:
             response = ai_client.chat.completions.create(
@@ -571,17 +586,15 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
             if result == "不知道":
                 return None
 
-            # 移除可能的JSON代码块标记
-            result = re.sub(r'^```json\s*', '', result)  # 移除开头的```json
-            result = re.sub(r'\s*```$', '', result)  # 移除结尾的```
+            result = re.sub(r'^```json\s*', '', result)
+            result = re.sub(r'\s*```$', '', result)
 
-            # 解析JSON响应
             json_result = json.loads(result)
-            # 验证必要字段
-            if "title" in json_result and "description" in json_result:
+            if "title" in json_result and "description" in json_result and "category" in json_result:
                 return {
                     "title": json_result["title"].strip(),
-                    "description": json_result["description"].strip()
+                    "description": json_result["description"].strip(),
+                    "category": json_result["category"].strip()
                 }
             return None
 
@@ -601,42 +614,40 @@ def ask_openai(question: str) -> Optional[Dict[str, str]]:
 
 
 def clean_website_info(url: str, original_title: str = "", original_desc: str = "") -> Optional[Dict[str, str]]:
-    """清理并优化网站标题和描述（结合API和AI，使用小写URL）"""
-    # 合并无效值集合
+    """清理并优化网站标题、描述和分类（结合API和AI）"""
     invalid_values = {"null", "暂无标题", "暂无描述"}
 
-    # 清理原始信息
     cleaned_original_title = clean_html_entities(original_title).strip() if original_title else ""
     cleaned_original_desc = clean_html_entities(original_desc).strip() if original_desc else ""
 
-    # 过滤无效值
     if cleaned_original_title in invalid_values:
         cleaned_original_title = ""
     if cleaned_original_desc in invalid_values:
         cleaned_original_desc = ""
 
-    # 尝试通过API获取信息（使用小写URL）
+    # 尝试通过API获取信息
     api_info = fetch_website_info(url)
     domain = extract_domain(url)
 
     # 处理API获取到的信息
     if api_info:
-        # 过滤API返回的无效值
         api_title = api_info["title"] if api_info["title"] not in invalid_values else ""
         api_desc = api_info["description"] if api_info["description"] not in invalid_values else ""
 
-        # 只要标题或描述有一个有效就调用AI
         if api_title or api_desc:
             if ai_info := ask_openai(f"网址：{domain}\n网站标题：{api_title}\n网站描述：{api_desc}"):
-                # 检查标题是否包含俄文字符（西里尔字母）
                 if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
                     logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
                     return None
+                # 验证分类是否有效
+                if ai_info["category"] not in AI_CATEGORY_OPTIONS:
+                    logger.warning(f"AI返回无效分类 {ai_info['category']}，使用默认分类")
+                    ai_info["category"] = "其他"
                 return ai_info
         logger.warning(f"API获取到信息但都无效，丢弃URL: {url}")
         return None
 
-    # 白名单域名直接调用AI（使用小写URL检查）
+    # 白名单域名直接调用AI
     if is_domain_whitelisted(url):
         prompt = f"网址：{domain}"
         if cleaned_original_title:
@@ -645,10 +656,12 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
             prompt += f"\n网站描述：{cleaned_original_desc}"
 
         if ai_info := ask_openai(prompt):
-            # 检查标题是否包含俄文字符（西里尔字母）
             if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
                 logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
                 return None
+            if ai_info["category"] not in AI_CATEGORY_OPTIONS:
+                logger.warning(f"AI返回无效分类 {ai_info['category']}，使用默认分类")
+                ai_info["category"] = "其他"
             return ai_info
         logger.warning(f"白名单域名但AI调用失败，丢弃URL: {url}")
         return None
@@ -662,15 +675,16 @@ def clean_website_info(url: str, original_title: str = "", original_desc: str = 
             prompt += f"\n网站描述：{cleaned_original_desc}"
 
         if ai_info := ask_openai(prompt):
-            # 检查标题是否包含俄文字符（西里尔字母）
             if re.search(r'[\u0400-\u04FF]', ai_info["title"]):
                 logger.warning(f"AI生成俄文标题，丢弃URL: {url}")
                 return None
+            if ai_info["category"] not in AI_CATEGORY_OPTIONS:
+                logger.warning(f"AI返回无效分类 {ai_info['category']}，使用默认分类")
+                ai_info["category"] = "其他"
             return ai_info
         logger.warning(f"有原始信息但AI调用失败，丢弃URL: {url}")
         return None
 
-    # 没有API信息且非白名单，也没有原始信息则丢弃
     return None
 
 
@@ -719,15 +733,13 @@ def validate_svg(svg_content: str) -> bool:
 
 
 def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
-    """下载并保存图片（带重试机制，使用小写URL）"""
+    """下载并保存图片（带重试机制）"""
     for attempt in range(1, MAX_IMAGE_RETRIES + 1):
         try:
-            # 强制使用HTTPS并转为小写
             img_src = img_src.lower()
             if img_src.startswith('http://'):
                 img_src = img_src.replace('http://', 'https://')
 
-            # 记录下载尝试
             log_msg = f"重试下载图片 (尝试 {attempt}/{MAX_IMAGE_RETRIES}): {img_src}" if attempt > 1 else f"开始下载图片: {img_src}"
             logger.info(log_msg)
 
@@ -755,7 +767,6 @@ def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
                     f.write(svg_content)
                 return True, "已转换为SVG"
 
-            # 无效SVG处理
             logger.warning(f"生成的SVG文件无效: {filename}")
             if attempt == MAX_IMAGE_RETRIES:
                 return False, "生成的SVG文件无效"
@@ -766,7 +777,7 @@ def download_and_save_image(img_src: str, filename: str) -> Tuple[bool, str]:
             logger.warning(error_msg)
 
             if attempt < MAX_IMAGE_RETRIES:
-                time.sleep(INITIAL_RETRY_DELAY * attempt)  # 指数退避
+                time.sleep(INITIAL_RETRY_DELAY * attempt)
 
     return False, f"超过最大重试次数 ({MAX_IMAGE_RETRIES}次)"
 
@@ -803,8 +814,8 @@ def generate_filename(
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ) -> Tuple[Optional[str], Optional[str]]:
-    """生成唯一的图标文件名，处理域名冲突（使用小写URL）"""
-    url_without_slash = url.rstrip('/').lower()  # URL转为小写
+    """生成唯一的图标文件名，处理域名冲突"""
+    url_without_slash = url.rstrip('/').lower()
     ext = extract(url_without_slash)
 
     subdomain = ext.subdomain.lower()
@@ -917,31 +928,29 @@ def expand_color_format(color: str) -> str:
 # ============================== 核心处理函数 ==============================
 def process_url(
         item,
-        category: str,
         processed_normalized_urls: Set[str],
         processed_domains: Dict[str, Dict[str, str]],
         processed_data: List[WebsiteData],
         lock: threading.Lock
 ):
-    """处理单个URL，包括验证、去重、标题描述生成和图标下载（确保URL小写）"""
-    # 提取基础信息，URL转为小写
+    """处理单个URL，包括验证、去重、标题描述生成和图标下载"""
     original_title = item.get('name', '').strip()
-    url = item.get('url', '').lower()  # 原始URL转为小写
-    img_src = item.get('imgSrc', '').lower()  # 图标URL转为小写
+    url = item.get('url', '').lower()
+    # 对原始URL应用域名映射
+    url = apply_domain_mapping(url)
+    img_src = item.get('imgSrc', '').lower()
     background_color = item.get('backgroundColor', '')
     original_desc = item.get('description', '')
 
-    # 验证基础信息
     if not url:
         logger.warning("丢弃url为空的条目")
         return
 
-    # 检查颜色是否为空，为空则丢弃
     if not background_color:
         logger.warning(f"丢弃颜色为空的条目: {url}")
         return
 
-    # 检查URL可访问性和跳转处理（返回小写URL）
+    # 检查URL可访问性和跳转处理
     accessible, error, final_url, normalized_url = check_url_accessibility(url)
     if not accessible:
         logger.warning(f"不可处理URL: {url} - {error}")
@@ -951,37 +960,40 @@ def process_url(
         logger.warning(f"无法标准化URL: {final_url}")
         return
 
-    # 检查重复URL（使用小写URL）
+    # 检查重复URL
     with lock:
         if normalized_url in processed_normalized_urls:
             return
 
-    # 处理标题和描述（使用小写URL）
+    # 处理标题、描述和分类
     website_info = clean_website_info(final_url, original_title, original_desc)
     if not website_info:
-        logger.warning(f"无法生成有效的标题和描述，丢弃URL: {final_url}")
+        logger.warning(f"无法生成有效的标题、描述和分类，丢弃URL: {final_url}")
         return
 
     # 处理颜色
     expanded_color = expand_color_format(background_color)
-    # 再次检查扩展后的颜色是否为空
     if not expanded_color:
         logger.warning(f"丢弃扩展后颜色为空的条目: {url}")
         return
 
-    # 生成文件名（使用小写URL）
+    # 获取分类ID
+    category = website_info["category"]
+    category_id = CATEGORY_IDS.get(category, 14)  # 默认14为"其他"
+
+    # 生成文件名
     filename, conflict_msg = generate_filename(final_url, processed_domains, processed_data, lock)
     if filename is None:
         logger.info(f"URL被丢弃: {final_url} - {conflict_msg}")
         return
 
-    # 下载并保存图片（使用小写URL）
+    # 下载并保存图片
     success, status = download_and_save_image(img_src, filename)
     if not success:
         logger.warning(f"图片最终下载失败，丢弃条目: {url} - {status}")
         return
 
-    # 保存处理结果（URL确保为小写）
+    # 保存处理结果
     with lock:
         processed_normalized_urls.add(normalized_url)
         domain = extract(final_url.rstrip('/').lower())
@@ -990,18 +1002,19 @@ def process_url(
             'filename': filename
         }
         processed_data.append(WebsiteData(
-            name=website_info["title"],  # 使用AI生成的标题
-            url=final_url,  # 使用跳转后的最终URL（已确保小写）
-            description=website_info["description"],  # 使用AI生成的描述
+            name=website_info["title"],
+            url=final_url,
+            description=website_info["description"],
             img_src=img_src,
             local_filename=filename,
             category=category,
+            category_id=category_id,
             background_color=expanded_color
         ))
 
 
 def process_category(category: str, url_queue: list, lock: threading.Lock, seen_urls: Set[str]):
-    """获取指定分类的所有URL并加入处理队列（URL转为小写），并检查是否已存在"""
+    """获取指定分类的所有URL并加入处理队列，并检查是否已存在"""
     logger.info(f"开始获取分类[{category}]的URL")
     base_url = 'https://api.codelife.cc/website/list'
     lang = 'zh'
@@ -1030,7 +1043,10 @@ def process_category(category: str, url_queue: list, lock: threading.Lock, seen_
             with lock:
                 new_items_count = 0
                 for item in data['data']:
-                    url = item.get('url', '').lower()  # URL转为小写
+                    url = item.get('url', '').lower()
+                    # 对获取到的URL应用域名映射
+                    url = apply_domain_mapping(url)
+
                     if url.startswith('http://'):
                         url = url.replace('http://', 'https://')
 
@@ -1041,8 +1057,8 @@ def process_category(category: str, url_queue: list, lock: threading.Lock, seen_
                     if normalized_url not in seen_urls:
                         seen_urls.add(normalized_url)
                         item['url'] = url
-                        item['imgSrc'] = item.get('imgSrc', '').lower()  # 图标URL转为小写
-                        url_queue.append((item, category))
+                        item['imgSrc'] = item.get('imgSrc', '').lower()
+                        url_queue.append(item)
                         new_items_count += 1
 
                 logger.info(f"分类[{category}]第{page}页添加了{new_items_count}个新URL")
@@ -1057,11 +1073,11 @@ def process_category(category: str, url_queue: list, lock: threading.Lock, seen_
 
 
 def generate_sql_statements(websites: List[WebsiteData]) -> str:
-    """生成SQL导入语句（确保URL为小写）"""
-    # 按area值(分类ID)排序，再按name排序
+    """生成SQL导入语句"""
+    # 按分类ID排序，再按名称排序
     sorted_websites = sorted(
         websites,
-        key=lambda x: (CATEGORY_IDS.get(x.category, 15), x.name)
+        key=lambda x: (x.category_id, x.name)
     )
 
     sql_statements = []
@@ -1085,24 +1101,31 @@ def generate_sql_statements(websites: List[WebsiteData]) -> str:
         # 提取域名（小写）
         domain_parts = extract(url_with_slash)
         domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}" if domain_parts.subdomain else domain_parts.registered_domain
-        domain = domain.lower()  # 确保域名为小写
+        domain = domain.lower()
 
-        # 获取分类ID(area值)
-        category_id = CATEGORY_IDS.get(site.category, 15)
-
-        # 生成SQL语句，使用带斜杠的小写URL
+        # 生成SQL语句
         sql = (
             f"INSERT INTO `mtab`.`linkstore` "
             f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
             f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
             f"VALUES "
             f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{url_with_slash}', "
-            f"'icon', '1x1', '2025-01-01 00:00:00', 0, {category_id}, '{escaped_description}', '{domain}', "
+            f"'icon', '1x1', '2025-01-01 00:00:00', 0, {site.category_id}, '{escaped_description}', '{domain}', "
             f"0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"
         )
         sql_statements.append(sql)
 
     return "\n".join(sql_statements)
+
+
+def generate_json_data(websites: List[WebsiteData]) -> str:
+    """生成JSON数据"""
+    # 转换为字典列表
+    websites_dict = [asdict(website) for website in websites]
+    # 按分类ID和名称排序
+    websites_dict.sort(key=lambda x: (x['category_id'], x['name']))
+    # 转换为JSON
+    return json.dumps(websites_dict, ensure_ascii=False, indent=2)
 
 
 # ============================== 主函数 ==============================
@@ -1119,9 +1142,10 @@ def main() -> None:
     logger.info(f"AI最大重试次数: {AI_CONFIG['max_retries']}")
     logger.info(f"最大URL跳转次数: {REDIRECT_CONFIG['max_redirects']}")
     logger.info(f"图片下载最大重试次数: {MAX_IMAGE_RETRIES}")
-    logger.info(f"处理分类数量: {len(REVERSED_CATEGORIES)}")
-    logger.info(f"处理分类顺序: {REVERSED_CATEGORIES}")  # 显示反向分类顺序
+    logger.info(f"处理分类数量: {len(CATEGORIES)}")
+    logger.info(f"处理分类顺序: {CATEGORIES}")
     logger.info(f"域名黑名单数量: {len(DOMAIN_BLACKLIST)}")
+    logger.info(f"域名映射规则数量: {len(DOMAIN_MAPPING)}")
     logger.info("\n")
 
     # 初始化数据结构
@@ -1134,12 +1158,12 @@ def main() -> None:
     data_lock = threading.Lock()  # 数据操作锁
     seen_urls = set()  # 用于跟踪已获取的URL，确保去重
 
-    # 第一步：多线程获取所有分类的URL（按反向顺序，从others到ai）
+    # 第一步：多线程获取所有分类的URL（按原始顺序）
     logger.info("===== 开始收集所有分类的URL =====")
-    with ThreadPoolExecutor(max_workers=min(len(REVERSED_CATEGORIES), 2)) as category_executor:
+    with ThreadPoolExecutor(max_workers=min(len(CATEGORIES), 2)) as category_executor:
         futures = [
             category_executor.submit(process_category, category, url_queue, queue_lock, seen_urls)
-            for category in REVERSED_CATEGORIES
+            for category in CATEGORIES
         ]
         for future in as_completed(futures):
             try:
@@ -1149,18 +1173,18 @@ def main() -> None:
 
     logger.info(f"\n共收集到 {len(url_queue)} 个不重复的URL待处理\n")
 
-    # 第二步：多线程处理所有URL（确保处理过程中URL为小写）
+    # 第二步：多线程处理所有URL
     logger.info("===== 开始多线程处理URL =====")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as url_executor:
         pbar = tqdm(total=len(url_queue), desc="处理URL进度")
 
-        def process_with_progress(item, category):
-            process_url(item, category, processed_normalized_urls, processed_domains, processed_data, data_lock)
+        def process_with_progress(item):
+            process_url(item, processed_normalized_urls, processed_domains, processed_data, data_lock)
             pbar.update(1)
 
         futures = [
-            url_executor.submit(process_with_progress, item, category)
-            for item, category in url_queue
+            url_executor.submit(process_with_progress, item)
+            for item in url_queue
         ]
 
         for future in as_completed(futures):
@@ -1189,14 +1213,19 @@ def main() -> None:
             print(f"{i}. [{item.category}] {item.name}")
             print(f"   URL: {item.url}")
             print(f"   描述: {item.description}")
+            print(f"   分类ID: {item.category_id}")
             print(f"   本地文件: {item.local_filename}")
             print(f"   背景颜色: {item.background_color}\n")
 
-        # 生成SQL文件（确保URL为小写）
+        # 生成JSON文件
+        json_content = generate_json_data(processed_data)
+        save_file(json_content, JSON_OUTPUT_FILE)
+        print(f"JSON数据文件已生成: {JSON_OUTPUT_FILE}")
+
+        # 生成SQL文件
         sql_content = generate_sql_statements(processed_data)
         save_file(sql_content, SQL_OUTPUT_FILE)
-
-        print(f"\nSQL导入文件已生成: {SQL_OUTPUT_FILE}")
+        print(f"SQL导入文件已生成: {SQL_OUTPUT_FILE}")
         print(f"包含 {len(sql_content.split('INSERT')) - 1} 条INSERT语句")
     else:
         logger.warning("未处理任何数据")
