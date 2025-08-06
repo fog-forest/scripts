@@ -12,10 +12,12 @@
   MacCMS 视频信息整理工具。
 - **mail-api**
   发送邮件接口，支持多种模板。
-- **mtab-input**
+- **mtab-import**
   mTab新标签页数据丰富脚本（壁纸、书签）。
 - **oracle-lookbusy**
   甲骨文云免费机器保活工具，采用智能资源占用策略。
+- **wallpaper-dl**
+  多平台壁纸下载工具，适配 Wallhaven。
 
 ## 免责声明
 

@@ -26,22 +26,22 @@ CATEGORIES = [
     "ai", "app", "news", "music", "tech", "photos", "life", "education",
     "entertainment", "shopping", "social", "read", "sports", "finance", "others"
 ]
-CATEGORY_IDS={
-    "生活&出行&地图&交通&美食&健康&母婴":1,
-    "新闻&资讯&财经资讯&地方资讯":2,
-    "社交&互动&论坛&社区&邮箱&即时通讯":3,
-    "购物&消费&电商&跨境购&二手交易":4,
-    "影音&媒体&影视&音乐&短视频&直播":5,
-    "阅读&出版&书籍&小说&漫画&百科&文献":6,
-    "游戏&娱乐&电竞&手游&休闲游戏":7,
-    "应用&工具&办公工具&效率工具&系统工具&AI":8,
-    "教育&学习&课程&大学&职业教育&语言学习":9,
-    "设计&图片&素材&创意&模板&UI设计":10,
-    "开发&编程&Web&框架&编程语言&IDE&技术&文档&API文档&开源手册&教程文档":11,
-    "职场&就业&招聘&创业&职场技能":12,
-    "金融&投资&银行&理财&保险&支付":13,
-    "体育&运动&健身&赛事&运动装备":14,
-    "其他":15
+CATEGORY_IDS = {
+    "生活&出行&地图&交通&美食&健康&母婴": 1,
+    "新闻&资讯&财经资讯&地方资讯": 2,
+    "社交&互动&论坛&社区&邮箱&即时通讯": 3,
+    "购物&消费&电商&跨境购&二手交易": 4,
+    "影音&媒体&影视&音乐&短视频&直播": 5,
+    "阅读&出版&书籍&小说&漫画&百科&文献": 6,
+    "游戏&娱乐&电竞&手游&休闲游戏": 7,
+    "应用&工具&办公工具&效率工具&系统工具&AI": 8,
+    "教育&学习&课程&大学&职业教育&语言学习": 9,
+    "设计&图片&素材&创意&模板&UI设计": 10,
+    "开发&编程&Web&框架&编程语言&IDE&技术&文档&API文档&开源手册&教程文档": 11,
+    "职场&就业&招聘&创业&职场技能": 12,
+    "金融&投资&银行&理财&保险&支付": 13,
+    "体育&运动&健身&赛事&运动装备": 14,
+    "其他": 15
 }
 
 # 供AI参考的分类列表
@@ -495,14 +495,15 @@ def fetch_website_info(url: str) -> Optional[Dict[str, str]]:
 
     api_list = [
         {
-            "name": "geeker",
-            "url_template": "https://geeker.moe/tdk.php?url={}",
+            "name": "amogu",
+            "url_template": "https://api.amogu.cn/api/tdk?url={}",
             "parse_func": lambda data: {
                 "title": title,
                 "description": desc
-            } if (desc := data.get('description', ''))
-                 and (title := data.get('title', ''))
-                 and data.get('code') == 1
+            } if data.get('code') == 1
+                 and (data_dict := data.get('data', {}))
+                 and (desc := data_dict.get('description', ''))
+                 and (title := data_dict.get('title', ''))
                  and (title.strip() and title not in invalid_values or
                       desc.strip() and desc not in invalid_values)
                  and (not desc.strip() or is_valid_text(desc))
