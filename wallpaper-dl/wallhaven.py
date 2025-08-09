@@ -2,9 +2,7 @@
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
 # @Date  : 2025/08/08
-# @Desc  : Wallhaven 壁纸批量下载脚本 - 支持过滤黑白和纯色背景图片
-
-# 导入所有依赖库
+# @Desc  : Wallhaven 壁纸批量下载脚本 - 支持过滤黑白、纯色背景、偏暗和相似图片
 import logging
 import os
 import re
@@ -24,23 +22,23 @@ API_BASE_URL = "https://api.codelife.cc/wallpaper/wallhaven"
 
 # 分类映射关系 (id: 分类名称)
 CATEGORY_MAPPING = {
-    "1": "动漫",
-    "5": "动漫",
-    # "14": "科幻",
-    # "37": "自然",
-    # "711": "风景",
-    # "853": "幻想",
-    # "869": "图案",
-    # "1748": "吉卜力",
-    # "2321": "像素",
-    # "12757": "Cosplay"
+    # "1": "动漫",
+    # "5": "动漫",
+    "14": "科幻",
+    "37": "自然",
+    "711": "自然",
+    "853": "幻想",
+    "869": "图案",
+    "1748": "吉卜力",
+    "2321": "像素",
+    "12757": "Cosplay"
 }
 
 # 自定义下载根目录
 DOWNLOAD_ROOT_DIR = "D:/DL"
 
 # 并发下载线程数
-MAX_WORKERS = 10
+MAX_WORKERS = 5
 
 # 请求超时时间(秒)
 TIMEOUT = 10
@@ -60,8 +58,10 @@ RETRY_DELAY = 2
 
 # 图片过滤配置
 BLACK_WHITE_THRESHOLD = 10  # 黑白判断阈值
-SOLID_BACKGROUND_THRESHOLD = 0.6  # 纯色背景判断阈值（占比超过此值则视为纯色背景）
-SOLID_COLOR_TOLERANCE = 15  # 颜色容差，控制判断颜色是否相近的严格程度
+SOLID_BACKGROUND_THRESHOLD = 0.7  # 纯色背景判断阈值
+SOLID_COLOR_TOLERANCE = 15  # 颜色容差
+BRIGHTNESS_THRESHOLD = 20  # 亮度阈值（0-255）
+SIMILARITY_THRESHOLD = 5  # 相似图片判断阈值（汉明距离），值越小要求越相似
 
 # 域名配置 - 主域名和备用域名列表
 PRIMARY_DOMAIN = "https://w.wallhaven.cc/"
@@ -80,6 +80,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 存储已下载图片的哈希值，用于相似性检查
+image_hashes = {}  # 结构: {category_name: [hash_values]}
+
 
 # =================================================
 
@@ -89,16 +92,14 @@ def get_domain_url(raw_url, domain):
     if not raw_url:
         return ""
 
-    # 修正正则表达式：精准匹配从full/开始到图片扩展名(jpg/jpeg/png/gif/webp)结束的路径
+    # 修正正则表达式：精准匹配从full/开始到图片扩展名结束的路径
     path_match = re.search(r'(full/[^?]+\.(?:jpg|jpeg|png|gif|webp))', raw_url)
     if path_match:
-        path = path_match.group(1)  # 获取到类似"full/w8/wallhaven-w82qyx.jpg"的路径
-        # 确保域名以/结尾
+        path = path_match.group(1)
         if not domain.endswith('/'):
             domain += '/'
-        return f"{domain}{path}"  # 拼接新域名和路径
+        return f"{domain}{path}"
 
-    # 如果无法解析，返回清理后的原始URL
     logger.warning(f"无法提取有效路径: {raw_url}")
     return raw_url.split('?')[0]
 
@@ -108,20 +109,67 @@ def clean_url(raw_url):
     return get_domain_url(raw_url, PRIMARY_DOMAIN)
 
 
+def calculate_perceptual_hash(image, hash_size=16):
+    """计算图片的感知哈希值"""
+    try:
+        # 缩小图片尺寸并转为灰度图
+        img = image.resize((hash_size, hash_size), Image.LANCZOS).convert('L')
+        img_array = np.array(img)
+
+        # 计算平均亮度
+        avg_brightness = img_array.mean()
+
+        # 生成哈希值：像素亮度高于平均为1，否则为0
+        hash_array = (img_array > avg_brightness).flatten()
+
+        # 转换为整数哈希值
+        hash_value = 0
+        for bit in hash_array:
+            hash_value = (hash_value << 1) | (1 if bit else 0)
+
+        return hash_value
+    except Exception as e:
+        logger.error(f"计算哈希值失败: {str(e)}")
+        return None
+
+
+def hamming_distance(hash1, hash2):
+    """计算两个哈希值的汉明距离"""
+    if hash1 is None or hash2 is None:
+        return float('inf')  # 无法计算时视为差异极大
+    # 计算两个哈希值的异或结果中1的个数
+    return bin(hash1 ^ hash2).count('1')
+
+
+def is_similar_to_existing(image, category_name):
+    """判断图片是否与同分类中已下载的图片相似"""
+    if category_name not in image_hashes:
+        return False, None
+
+    current_hash = calculate_perceptual_hash(image)
+    if current_hash is None:
+        return False, None
+
+    # 与同分类中所有已下载图片比较
+    for existing_hash in image_hashes[category_name]:
+        distance = hamming_distance(current_hash, existing_hash)
+        if distance < SIMILARITY_THRESHOLD:
+            return True, distance
+
+    return False, None
+
+
 def is_black_white(image):
     """判断图片是否为黑白"""
     try:
-        # 转换为RGB格式，统一通道数
         img_rgb = image.convert('RGB')
         img_array = np.array(img_rgb)
 
         r, g, b = img_array[:, :, 0], img_array[:, :, 1], img_array[:, :, 2]
-        # 计算RGB通道差异
         diff1 = np.abs(r - g)
         diff2 = np.abs(r - b)
         diff3 = np.abs(g - b)
 
-        # 所有通道差异都小于阈值的像素比例
         total_pixels = img_array.shape[0] * img_array.shape[1]
         bw_pixels = np.sum((diff1 < BLACK_WHITE_THRESHOLD) &
                            (diff2 < BLACK_WHITE_THRESHOLD) &
@@ -130,49 +178,48 @@ def is_black_white(image):
         return bw_pixels / total_pixels > 0.95
     except Exception as e:
         logger.error(f"黑白判断失败: {str(e)}")
-        return False  # 出错时不判定为黑白
+        return False
 
 
 def has_solid_background(image):
     """判断图片是否有纯色背景"""
     try:
-        # 转换为RGB格式
         img_rgb = image.convert('RGB')
         img_array = np.array(img_rgb)
-
-        # 将图像数据展平为像素列表
         pixels = img_array.reshape(-1, 3)
 
-        # 计算每个像素的"颜色签名"，基于容差分组相似颜色
-        # 使用K-means聚类找到主要颜色（最多10种）
         kmeans = KMeans(n_clusters=min(10, len(pixels)), random_state=42)
         kmeans.fit(pixels)
 
-        # 计算每个聚类的像素数量
         cluster_counts = np.bincount(kmeans.labels_)
-
-        # 找到最大聚类的占比
         max_cluster_ratio = np.max(cluster_counts) / len(pixels)
 
-        # 如果最大聚类占比超过阈值，则视为纯色背景
         return max_cluster_ratio > SOLID_BACKGROUND_THRESHOLD
-
     except Exception as e:
         logger.error(f"纯色背景判断失败: {str(e)}")
-        return False  # 出错时不判定为纯色背景
+        return False
 
 
-def download_and_filter_image(url, save_path):
+def is_too_dark(image):
+    """判断图片是否偏暗"""
+    try:
+        img_gray = image.convert('L')
+        img_array = np.array(img_gray)
+        average_brightness = np.mean(img_array)
+        return average_brightness < BRIGHTNESS_THRESHOLD
+    except Exception as e:
+        logger.error(f"亮度判断失败: {str(e)}")
+        return False
+
+
+def download_and_filter_image(url, save_path, category_name):
     """下载图片并进行过滤（支持多域名切换重试）"""
-    # 获取所有可能的域名列表（主域名+备用域名）
     all_domains = [PRIMARY_DOMAIN] + BACKUP_DOMAINS
     current_domain_index = 0
 
     for attempt in range(MAX_RETRIES):
         try:
-            # 本次尝试使用的域名
             current_domain = all_domains[current_domain_index]
-            # 生成当前域名的URL
             current_url = get_domain_url(url, current_domain)
 
             logger.debug(f"尝试下载 {current_url} (第 {attempt + 1} 次，使用域名: {current_domain})")
@@ -184,10 +231,8 @@ def download_and_filter_image(url, save_path):
             )
             response.raise_for_status()
 
-            # 加载图片数据
             image_data = BytesIO(response.content)
 
-            # 尝试打开图片
             try:
                 with Image.open(image_data) as img:
                     # 检查是否为黑白图片
@@ -200,6 +245,17 @@ def download_and_filter_image(url, save_path):
                         logger.debug(f"过滤纯色背景图片: {current_url}")
                         return False, "纯色背景图片"
 
+                    # 检查是否为偏暗图片
+                    if is_too_dark(img):
+                        logger.debug(f"过滤偏暗图片: {current_url}")
+                        return False, "偏暗图片"
+
+                    # 检查是否与已下载图片相似
+                    is_similar, distance = is_similar_to_existing(img, category_name)
+                    if is_similar:
+                        logger.debug(f"过滤相似图片 (距离: {distance}): {current_url}")
+                        return False, f"相似图片 (距离: {distance})"
+
             except Exception as e:
                 logger.warning(f"图片分析失败 {current_url} (格式可能异常): {str(e)}")
                 return False, "图片格式异常"
@@ -209,12 +265,18 @@ def download_and_filter_image(url, save_path):
             with open(save_path, 'wb') as f:
                 f.write(response.content)
 
+            # 计算并保存哈希值
+            with Image.open(save_path) as saved_img:
+                img_hash = calculate_perceptual_hash(saved_img)
+                if img_hash is not None:
+                    if category_name not in image_hashes:
+                        image_hashes[category_name] = []
+                    image_hashes[category_name].append(img_hash)
+
             logger.debug(f"成功下载: {save_path} (来源: {current_url})")
             return True, "成功"
 
         except Exception as e:
-            # 准备下次尝试
-            # 切换到下一个域名（循环切换）
             current_domain_index = (current_domain_index + 1) % len(all_domains)
 
             if attempt < MAX_RETRIES - 1:
@@ -272,7 +334,6 @@ def collect_all_image_urls():
 
             logger.info(f"分类 {category_name} 发现 {cat_count} 张壁纸，共 {total_pages} 页")
 
-            # 处理所有页面
             for page in range(1, total_pages + 1):
                 page_data = fetch_page_images(category_id, page)
                 if not page_data or page_data.get("code") != 200:
@@ -318,7 +379,13 @@ def download_categorized_images(categorized_images):
     logger.info(f"使用的域名列表: 主域名={PRIMARY_DOMAIN}, 备用域名={BACKUP_DOMAINS}")
     os.makedirs(DOWNLOAD_ROOT_DIR, exist_ok=True)
 
-    total_stats = {"total": 0, "success": 0, "failed": 0, "filtered_black_white": 0, "filtered_solid_bg": 0}
+    # 初始化哈希存储
+    global image_hashes
+    image_hashes = {category: [] for category in categorized_images.keys()}
+
+    total_stats = {"total": 0, "success": 0, "failed": 0,
+                   "filtered_black_white": 0, "filtered_solid_bg": 0,
+                   "filtered_dark": 0, "filtered_similar": 0}
 
     for category_name, image_list in categorized_images.items():
         logger.info(f"开始处理分类: {category_name}，共 {len(image_list)} 张图片")
@@ -327,12 +394,15 @@ def download_categorized_images(categorized_images):
             "success": 0,
             "failed": 0,
             "filtered_black_white": 0,
-            "filtered_solid_bg": 0
+            "filtered_solid_bg": 0,
+            "filtered_dark": 0,
+            "filtered_similar": 0
         }
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # 提交任务时传递分类名称
             futures = {
-                executor.submit(download_and_filter_image, url, path): (url, path)
+                executor.submit(download_and_filter_image, url, path, category_name): (url, path)
                 for url, path in image_list
             }
 
@@ -349,6 +419,12 @@ def download_categorized_images(categorized_images):
                     elif reason == "纯色背景图片":
                         cat_stats["filtered_solid_bg"] += 1
                         logger.info(f"已过滤 {reason}: {cleaned_url}")
+                    elif reason == "偏暗图片":
+                        cat_stats["filtered_dark"] += 1
+                        logger.info(f"已过滤 {reason}: {cleaned_url}")
+                    elif reason.startswith("相似图片"):
+                        cat_stats["filtered_similar"] += 1
+                        logger.info(f"已过滤 {reason}: {cleaned_url}")
                     else:
                         cat_stats["failed"] += 1
                         logger.info(f"下载失败 {reason}: {cleaned_url}")
@@ -361,7 +437,9 @@ def download_categorized_images(categorized_images):
             f"成功 {cat_stats['success']} 张, "
             f"失败 {cat_stats['failed']} 张, "
             f"过滤黑白 {cat_stats['filtered_black_white']} 张, "
-            f"过滤纯色背景 {cat_stats['filtered_solid_bg']} 张\n"
+            f"过滤纯色背景 {cat_stats['filtered_solid_bg']} 张, "
+            f"过滤偏暗图片 {cat_stats['filtered_dark']} 张, "
+            f"过滤相似图片 {cat_stats['filtered_similar']} 张\n"
         )
 
     logger.info(
@@ -370,7 +448,9 @@ def download_categorized_images(categorized_images):
         f"成功下载: {total_stats['success']} 张\n"
         f"下载失败: {total_stats['failed']} 张\n"
         f"过滤黑白图片: {total_stats['filtered_black_white']} 张\n"
-        f"过滤纯色背景图片: {total_stats['filtered_solid_bg']} 张"
+        f"过滤纯色背景图片: {total_stats['filtered_solid_bg']} 张\n"
+        f"过滤偏暗图片: {total_stats['filtered_dark']} 张\n"
+        f"过滤相似图片: {total_stats['filtered_similar']} 张"
     )
 
 
@@ -379,7 +459,10 @@ def main():
     logger.info("====== Wallhaven 壁纸批量下载脚本启动 ======")
     logger.info(f"配置信息: 并发数={MAX_WORKERS}, 每页数量=50")
     logger.info(f"下载根目录: {os.path.abspath(DOWNLOAD_ROOT_DIR)}")
-    logger.info(f"图片过滤: 黑白图片阈值={BLACK_WHITE_THRESHOLD}, 纯色背景阈值={SOLID_BACKGROUND_THRESHOLD}")
+    logger.info(f"图片过滤: 黑白图片阈值={BLACK_WHITE_THRESHOLD}, "
+                f"纯色背景阈值={SOLID_BACKGROUND_THRESHOLD}, "
+                f"亮度阈值={BRIGHTNESS_THRESHOLD}, "
+                f"相似图片阈值={SIMILARITY_THRESHOLD}")
     logger.info(f"域名配置: 主域名={PRIMARY_DOMAIN}, 备用域名={BACKUP_DOMAINS}")
 
     categorized_images = collect_all_image_urls()
