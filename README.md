@@ -17,7 +17,7 @@
 - **oracle-lookbusy**
   甲骨文云免费机器保活工具，采用智能资源占用策略。
 - **wallpaper-dl**
-  多平台壁纸下载工具，适配 Wallhaven。
+  多平台壁纸下载工具，适配 Wallhaven、360壁纸。
 
 ## 免责声明
 

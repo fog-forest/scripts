@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # coding=utf8
-# @Author: Kinoko <i@linux.wf>
-# @Date  : 2025/08/08
-# @Desc  : Wallhaven 壁纸批量下载脚本 - 支持过滤黑白、纯色背景、偏暗和相似图片
+# @Author: Modified based on Kinoko's script
+# @Date  : 2025/08/10
+# @Desc  : 360壁纸批量下载脚本 - 支持过滤黑白、纯色背景、偏暗和相似图片
 import logging
 import os
 import re
@@ -18,17 +18,15 @@ from tqdm import tqdm
 
 # ===================== 配置项 =====================
 # API基础地址
-API_BASE_URL = "https://api.codelife.cc/wallpaper/wallhaven"
+API_BASE_URL = "http://wallpaper.apc.360.cn/index.php"
 
-# 分类映射关系 (id: 分类名称)
+# 分类映射关系 (cid: 分类名称)
 CATEGORY_MAPPING = {
-    # "1": "二次元",
-    # "5": "二次元",
-    "37": "自然风景",
-    "711": "自然风景",
-    "1748": "吉卜力",
-    "2321": "像素风"
+    "14": "动物萌宠"
 }
+
+# 每页图片数量
+PAGE_SIZE = 100
 
 # 自定义下载根目录
 DOWNLOAD_ROOT_DIR = "D:/DL"
@@ -47,26 +45,16 @@ HEADERS = {
 }
 
 # 下载失败重试次数
-MAX_RETRIES = 10
+MAX_RETRIES = 3
 
 # 重试延迟时间(秒)
 RETRY_DELAY = 2
 
 # 图片过滤配置
-BLACK_WHITE_THRESHOLD = 10  # 黑白判断阈值
-SOLID_BACKGROUND_THRESHOLD = 0.7  # 纯色背景判断阈值
-SOLID_COLOR_TOLERANCE = 15  # 颜色容差
-BRIGHTNESS_THRESHOLD = 20  # 亮度阈值（0-255）
+BLACK_WHITE_THRESHOLD = 20  # 黑白判断阈值
+SOLID_BACKGROUND_THRESHOLD = 0.6  # 纯色背景判断阈值
+BRIGHTNESS_THRESHOLD = 50  # 亮度阈值（0-255）
 SIMILARITY_THRESHOLD = 5  # 相似图片判断阈值（汉明距离），值越小要求越相似
-
-# 域名配置 - 主域名和备用域名列表
-PRIMARY_DOMAIN = "https://w.wallhaven.cc/"
-BACKUP_DOMAINS = [
-    "https://w.wallhaven.wpcoder.cn/",
-    "https://w.wallhaven.clbug.com/",
-    "https://w.wallhaven.1lou.top/",
-    "https://files.codelife.cc/wallhaven/"
-]
 
 # 日志配置
 logging.basicConfig(
@@ -81,28 +69,6 @@ image_hashes = {}  # 结构: {category_name: [hash_values]}
 
 
 # =================================================
-
-
-def get_domain_url(raw_url, domain):
-    """使用指定域名生成URL，只提取full/.../wallhaven-....[图片格式]部分"""
-    if not raw_url:
-        return ""
-
-    # 修正正则表达式：精准匹配从full/开始到图片扩展名结束的路径
-    path_match = re.search(r'(full/[^?]+\.(?:jpg|jpeg|png|gif|webp))', raw_url)
-    if path_match:
-        path = path_match.group(1)
-        if not domain.endswith('/'):
-            domain += '/'
-        return f"{domain}{path}"
-
-    logger.warning(f"无法提取有效路径: {raw_url}")
-    return raw_url.split('?')[0]
-
-
-def clean_url(raw_url):
-    """默认URL清理：使用主域名"""
-    return get_domain_url(raw_url, PRIMARY_DOMAIN)
 
 
 def calculate_perceptual_hash(image, hash_size=16):
@@ -209,18 +175,12 @@ def is_too_dark(image):
 
 
 def download_and_filter_image(url, save_path, category_name):
-    """下载图片并进行过滤（支持多域名切换重试）"""
-    all_domains = [PRIMARY_DOMAIN] + BACKUP_DOMAINS
-    current_domain_index = 0
-
+    """下载图片并进行过滤"""
     for attempt in range(MAX_RETRIES):
         try:
-            current_domain = all_domains[current_domain_index]
-            current_url = get_domain_url(url, current_domain)
-
-            logger.debug(f"尝试下载 {current_url} (第 {attempt + 1} 次，使用域名: {current_domain})")
+            logger.debug(f"尝试下载 {url} (第 {attempt + 1} 次)")
             response = requests.get(
-                current_url,
+                url,
                 headers=HEADERS,
                 timeout=TIMEOUT,
                 stream=True
@@ -233,27 +193,27 @@ def download_and_filter_image(url, save_path, category_name):
                 with Image.open(image_data) as img:
                     # 检查是否为黑白图片
                     if is_black_white(img):
-                        logger.debug(f"过滤黑白图片: {current_url}")
+                        logger.debug(f"过滤黑白图片: {url}")
                         return False, "黑白图片"
 
                     # 检查是否为纯色背景图片
                     if has_solid_background(img):
-                        logger.debug(f"过滤纯色背景图片: {current_url}")
+                        logger.debug(f"过滤纯色背景图片: {url}")
                         return False, "纯色背景图片"
 
                     # 检查是否为偏暗图片
                     if is_too_dark(img):
-                        logger.debug(f"过滤偏暗图片: {current_url}")
+                        logger.debug(f"过滤偏暗图片: {url}")
                         return False, "偏暗图片"
 
                     # 检查是否与已下载图片相似
                     is_similar, distance = is_similar_to_existing(img, category_name)
                     if is_similar:
-                        logger.debug(f"过滤相似图片 (距离: {distance}): {current_url}")
+                        logger.debug(f"过滤相似图片 (距离: {distance}): {url}")
                         return False, f"相似图片 (距离: {distance})"
 
             except Exception as e:
-                logger.warning(f"图片分析失败 {current_url} (格式可能异常): {str(e)}")
+                logger.warning(f"图片分析失败 {url} (格式可能异常): {str(e)}")
                 return False, "图片格式异常"
 
             # 保存图片
@@ -269,36 +229,40 @@ def download_and_filter_image(url, save_path, category_name):
                         image_hashes[category_name] = []
                     image_hashes[category_name].append(img_hash)
 
-            logger.debug(f"成功下载: {save_path} (来源: {current_url})")
+            logger.debug(f"成功下载: {save_path}")
             return True, "成功"
 
         except Exception as e:
-            current_domain_index = (current_domain_index + 1) % len(all_domains)
-
             if attempt < MAX_RETRIES - 1:
-                next_domain = all_domains[current_domain_index]
                 logger.warning(
-                    f"下载失败 {current_url} (第 {attempt + 1} 次): {str(e)}，"
-                    f"将尝试域名 {next_domain} 重试..."
+                    f"下载失败 {url} (第 {attempt + 1} 次): {str(e)}，将重试..."
                 )
                 time.sleep(RETRY_DELAY * (attempt + 1))
                 continue
 
-            logger.error(f"下载失败 {current_url} (已达最大重试次数): {str(e)}")
+            logger.error(f"下载失败 {url} (已达最大重试次数): {str(e)}")
             return False, f"下载失败: {str(e)}"
     return None
 
 
-def fetch_page_images(category_id, page_num):
-    """获取指定分类和页码的图片列表"""
+def fetch_page_images(category_id, start_index):
+    """获取指定分类和起始位置的图片列表"""
     try:
-        url = f"{API_BASE_URL}?lang=cn&page={page_num}&size=50&q=id:{category_id}"
-        logger.debug(f"请求URL: {url}")
-        response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        params = {
+            "c": "WallPaper",
+            "a": "getAppsByCategory",
+            "cid": category_id,
+            "start": start_index,
+            "count": PAGE_SIZE,
+            "from": "360chrome"
+        }
+
+        logger.debug(f"请求URL: {API_BASE_URL}, 参数: {params}")
+        response = requests.get(API_BASE_URL, params=params, headers=HEADERS, timeout=TIMEOUT)
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"获取第 {page_num} 页数据失败: {str(e)}")
+        logger.error(f"获取起始位置 {start_index} 的数据失败: {str(e)}")
         return None
 
 
@@ -314,44 +278,57 @@ def collect_all_image_urls():
         save_dir = os.path.join(DOWNLOAD_ROOT_DIR, category_name)
 
         try:
-            first_page_data = fetch_page_images(category_id, 1)
-            if not first_page_data or first_page_data.get("code") != 200:
-                error_msg = first_page_data.get("msg", "未知错误") if first_page_data else "无法获取数据"
+            # 获取第一页数据以确定总数
+            first_page_data = fetch_page_images(category_id, 0)
+            if not first_page_data or first_page_data.get("errno") != "0":
+                error_msg = first_page_data.get("errmsg", "未知错误") if first_page_data else "无法获取数据"
                 logger.error(f"API请求失败: {error_msg}")
                 continue
 
-            total_pages = first_page_data.get("pages", 0)
-            cat_count = first_page_data.get("count", 0)
-            total_count += cat_count
+            total_images = int(first_page_data.get("total", 0))
+            total_count += total_images
 
-            if total_pages == 0:
+            if total_images == 0:
                 logger.info(f"分类 {category_name} 没有找到壁纸")
                 continue
 
-            logger.info(f"分类 {category_name} 发现 {cat_count} 张壁纸，共 {total_pages} 页")
+            logger.info(f"分类 {category_name} 发现 {total_images} 张壁纸")
 
-            for page in range(1, total_pages + 1):
-                page_data = fetch_page_images(category_id, page)
-                if not page_data or page_data.get("code") != 200:
-                    error_msg = page_data.get("msg", "未知错误") if page_data else "无法获取数据"
-                    logger.warning(f"获取第 {page} 页失败: {error_msg}，将跳过该页")
+            # 计算需要请求的页数
+            pages = (total_images + PAGE_SIZE - 1) // PAGE_SIZE
+
+            for page in range(pages):
+                start_index = page * PAGE_SIZE
+                # 避免请求超出总数
+                if start_index >= total_images:
+                    break
+
+                page_data = fetch_page_images(category_id, start_index)
+                if not page_data or page_data.get("errno") != "0":
+                    error_msg = page_data.get("errmsg", "未知错误") if page_data else "无法获取数据"
+                    logger.warning(f"获取起始位置 {start_index} 失败: {error_msg}，将跳过该页")
                     continue
 
                 for item in page_data.get("data", []):
-                    raw_url = item.get("raw", "")
-                    clean_img_url = clean_url(raw_url)
-                    if not clean_img_url:
+                    raw_url = item.get("url", "")
+                    # 移除了URL清理逻辑，直接使用原始URL
+                    if not raw_url:
                         continue
 
-                    image_name = f"{item.get('name', '')}.jpg"
+                    # 生成图片名称
+                    image_id = item.get("id", str(int(time.time() * 1000)))
+                    # 从URL提取扩展名
+                    ext_match = re.search(r'\.(\w+)(?:\?|$)', raw_url)
+                    ext = ext_match.group(1) if ext_match else 'jpg'
+                    image_name = f"{image_id}.{ext}"
                     image_name = re.sub(r'[\\/*?:"<>|]', "", image_name)
                     save_path = os.path.join(save_dir, image_name)
 
-                    if clean_img_url not in all_images:
-                        all_images[clean_img_url] = (category_name, save_path)
+                    if raw_url not in all_images:
+                        all_images[raw_url] = (category_name, save_path)
 
-                logger.info(f"已收集分类 {category_name} 第 {page}/{total_pages} 页的图片链接")
-                time.sleep(1)
+                logger.info(f"已收集分类 {category_name} 第 {page + 1}/{pages} 页的图片链接")
+                time.sleep(1)  # 避免请求过于频繁
 
         except Exception as e:
             logger.error(f"收集分类 {category_name} URL时出错: {str(e)}", exc_info=True)
@@ -372,7 +349,6 @@ def collect_all_image_urls():
 def download_categorized_images(categorized_images):
     """按分类下载整理好的图片"""
     logger.info("====== 开始按分类下载图片 ======")
-    logger.info(f"使用的域名列表: 主域名={PRIMARY_DOMAIN}, 备用域名={BACKUP_DOMAINS}")
     os.makedirs(DOWNLOAD_ROOT_DIR, exist_ok=True)
 
     # 初始化哈希存储
@@ -404,26 +380,25 @@ def download_categorized_images(categorized_images):
 
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"下载 {category_name}"):
                 url, path = futures[future]
-                cleaned_url = clean_url(url)
                 result, reason = future.result()
                 if result:
                     cat_stats["success"] += 1
                 else:
                     if reason == "黑白图片":
                         cat_stats["filtered_black_white"] += 1
-                        logger.info(f"已过滤 {reason}: {cleaned_url}")
+                        logger.info(f"已过滤 {reason}: {url}")
                     elif reason == "纯色背景图片":
                         cat_stats["filtered_solid_bg"] += 1
-                        logger.info(f"已过滤 {reason}: {cleaned_url}")
+                        logger.info(f"已过滤 {reason}: {url}")
                     elif reason == "偏暗图片":
                         cat_stats["filtered_dark"] += 1
-                        logger.info(f"已过滤 {reason}: {cleaned_url}")
+                        logger.info(f"已过滤 {reason}: {url}")
                     elif reason.startswith("相似图片"):
                         cat_stats["filtered_similar"] += 1
-                        logger.info(f"已过滤 {reason}: {cleaned_url}")
+                        logger.info(f"已过滤 {reason}: {url}")
                     else:
                         cat_stats["failed"] += 1
-                        logger.info(f"下载失败 {reason}: {cleaned_url}")
+                        logger.info(f"下载失败 {reason}: {url}")
 
         for key in total_stats:
             total_stats[key] += cat_stats[key]
@@ -452,14 +427,13 @@ def download_categorized_images(categorized_images):
 
 def main():
     """主函数"""
-    logger.info("====== Wallhaven 壁纸批量下载脚本启动 ======")
-    logger.info(f"配置信息: 并发数={MAX_WORKERS}, 每页数量=50")
+    logger.info("====== 360壁纸批量下载脚本启动 ======")
+    logger.info(f"配置信息: 并发数={MAX_WORKERS}, 每页数量={PAGE_SIZE}")
     logger.info(f"下载根目录: {os.path.abspath(DOWNLOAD_ROOT_DIR)}")
     logger.info(f"图片过滤: 黑白图片阈值={BLACK_WHITE_THRESHOLD}, "
                 f"纯色背景阈值={SOLID_BACKGROUND_THRESHOLD}, "
                 f"亮度阈值={BRIGHTNESS_THRESHOLD}, "
                 f"相似图片阈值={SIMILARITY_THRESHOLD}")
-    logger.info(f"域名配置: 主域名={PRIMARY_DOMAIN}, 备用域名={BACKUP_DOMAINS}")
 
     categorized_images = collect_all_image_urls()
     if categorized_images:
