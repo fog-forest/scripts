@@ -12,7 +12,7 @@ import numpy as np
 
 # ---------------------- 配置项 ----------------------
 # 目标目录路径（要处理的图片所在目录）
-TARGET_DIRECTORY = "D:/DL/风景"  # 替换为实际的目录路径
+TARGET_DIRECTORY = "D:/DL/自然风景"  # 替换为实际的目录路径
 
 # 支持的图片格式
 SUPPORTED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']
