@@ -1,15 +1,15 @@
 #!/usr/bin/python3
 # coding=utf8
 # @Author: Kinoko <i@linux.wf>
-# @Date  : 2025/07/25
-# @Desc  : SQL URL浏览器与截图工具（URL自动修正版）
-# @Func  : 从SQL文件中提取URL，批量获取网站信息并管理，自动修正URL域名不匹配问题，支持URL编辑
+# @Date  : 2025/08/11
+# @Desc  : JSON URL浏览器与截图工具（生成SQL版）
+# @Func  : 从JSON文件中提取URL，批量获取网站信息并管理，支持URL编辑，最终生成指定格式SQL
 
 # 公共配置项
 # 截图重试配置
 SCREENSHOT_MAX_RETRIES = 3  # 最大重试次数
 SCREENSHOT_RETRY_DELAY = 2  # 重试延迟（秒）
-MAX_THREADS = 8  # 最大同时运行的线程数量
+MAX_THREADS = 5  # 最大同时运行的线程数量
 
 # 分类映射关系
 CATEGORY_IDS = {
@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import queue
-import re
 import tempfile
 import threading
 import time
@@ -37,7 +36,7 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
-from urllib.parse import urlparse  # 新增：用于解析URL
+from urllib.parse import urlparse
 
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from reportlab.graphics import renderPM
@@ -51,7 +50,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 # 配置日志
 def setup_logger() -> logging.Logger:
     """配置并返回日志记录器"""
-    logger = logging.getLogger('sql_url_browser')
+    logger = logging.getLogger('json_url_browser')
     logger.setLevel(logging.INFO)
 
     ch = logging.StreamHandler()
@@ -70,11 +69,11 @@ def setup_logger() -> logging.Logger:
 logger = setup_logger()
 
 
-class SQLURLBrowser:
+class JSONURLBrowser:
     def __init__(self, root):
         """初始化应用程序"""
         self.root = root
-        self.root.title("SQL URL浏览器与截图工具")
+        self.root.title("JSON URL浏览器与SQL生成工具")
         self.root.geometry("1200x800")
 
         # 数据存储
@@ -82,17 +81,17 @@ class SQLURLBrowser:
         self.id_list = []  # 保持ID的顺序
         self.current_id = None  # 当前选中的ID
 
-        # 临时时存储 - 这些将被自动保存
+        # 临时存储 - 这些将被自动保存
         self.temp_title_changes = {}  # {id: new_title}
         self.temp_desc_changes = {}  # {id: new_desc}
-        self.temp_url_changes = {}  # 新增：{id: new_url} 存储URL修改
+        self.temp_url_changes = {}  # {id: new_url} 存储URL修改
         self.items_to_discard = set()  # 待丢弃的项ID
 
-        # 历史记录文件路径
-        self.history_file = os.path.join(os.getcwd(), ".url_modifications.json")
+        # 历史记录文件路径 - 修改为程序所在目录
+        self.history_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".url_modifications.json")
 
         # 目录与文件路径
-        self.sql_dir = None
+        self.json_dir = None
         self.icons_dir = None
         self.trash_dir = None
         self.screenshot_dir = None
@@ -108,9 +107,6 @@ class SQLURLBrowser:
 
         # 绑定事件
         self.bind_events()
-
-        # 加载历史记录
-        self.load_history()
 
         logger.info("应用程序初始化完成")
 
@@ -203,7 +199,7 @@ class SQLURLBrowser:
         self.browse_button = ttk.Button(self.file_frame, text="浏览...", command=self.browse_file)
         self.browse_button.pack(side=tk.LEFT, padx=5)
 
-        self.process_button = ttk.Button(self.file_frame, text="处理SQL文件", command=self.process_file)
+        self.process_button = ttk.Button(self.file_frame, text="处理JSON文件", command=self.process_file)
         self.process_button.pack(side=tk.LEFT, padx=5)
 
         self.fetch_info_button = ttk.Button(self.file_frame, text="批量获取网站信息",
@@ -407,41 +403,42 @@ class SQLURLBrowser:
 
     # 文件处理方法
     def browse_file(self):
-        """浏览览并选择SQL文件"""
+        """浏览并选择JSON文件"""
         file_path = filedialog.askopenfilename(
-            title="选择SQL文件",
-            filetypes=[("SQL files", "*.sql"), ("All files", "*.*")]
+            title="选择JSON文件",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
         )
         if file_path:
             self.file_path_var.set(file_path)
             logger.info(f"已选择文件: {file_path}")
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    line_count = sum(1 for line in f)
-                self.status_var.set(f"已选择文件，共 {line_count} 行")
+                    data = json.load(f)
+                    line_count = len(data)
+                self.status_var.set(f"已选择文件，共 {line_count} 条记录")
             except Exception as e:
-                logger.warning(f"无法计算文件行数: {str(e)}")
+                logger.warning(f"无法计算文件记录数: {str(e)}")
 
     def process_file(self):
-        """处理SQL文件，提取URL信息"""
-        sql_file = self.file_path_var.get()
-        if not sql_file or not os.path.exists(sql_file):
-            messagebox.showerror("错误", "请选择有效的SQL文件")
+        """处理JSON文件，提取URL信息"""
+        json_file = self.file_path_var.get()
+        if not json_file or not os.path.exists(json_file):
+            messagebox.showerror("错误", "请选择有效的JSON文件")
             return
 
         try:
-            logger.info(f"开始处理文件: {sql_file}")
-            self.sql_dir = os.path.dirname(sql_file)
+            logger.info(f"开始处理文件: {json_file}")
+            self.json_dir = os.path.dirname(json_file)
 
             # 设置目录
-            self.icons_dir = os.path.join(self.sql_dir, "icons")
+            self.icons_dir = os.path.join(self.json_dir, "icons")
             self.trash_dir = os.path.join(self.icons_dir, "trash")
-            self.screenshot_dir = os.path.join(self.sql_dir, "screenshots")
+            self.screenshot_dir = os.path.join(self.json_dir, "screenshots")
             for dir_path in [self.icons_dir, self.trash_dir, self.screenshot_dir]:
                 if not os.path.exists(dir_path):
                     os.makedirs(dir_path)
 
-            self.status_var.set("正在处理SQL文件...")
+            self.status_var.set("正在处理JSON文件...")
             self.progress_var.set(0)
 
             # 清空现有数据
@@ -457,51 +454,69 @@ class SQLURLBrowser:
             self.temp_url_changes.clear()  # 新增
             self.items_to_discard.clear()
 
-            # 读取并解析SQL文件
-            with open(sql_file, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
+            # 读取并解析JSON文件
+            with open(json_file, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
 
-            # 提取INSERT语句
-            insert_pattern = re.compile(
-                r"INSERT\s+INTO\s+`mtab`\.`linkstore`\s*\([^)]*\)\s*VALUES\s*\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*([^,]*)\s*,\s*([^,]*)\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*([^,]*)\s*,\s*([^,]*)\s*,\s*'([^']*)'\s*,\s*([^,]*)\s*,\s*([^,]*)\s*,\s*([^,]*)\s*,\s*([^,]*)\s*,\s*([^)]*)\s*\);",
-                re.DOTALL | re.IGNORECASE
-            )
+            total_items = len(json_data)
+            logger.info(f"JSON文件中包含 {total_items} 条记录")
 
-            matches = list(insert_pattern.finditer(sql_content))
-            total_matches = len(matches)
-            logger.info(f"SQL文件中匹配到 {total_matches} 条INSERT语句")
-
-            if total_matches == 0:
-                messagebox.showinfo("提示", "未在SQL文件中找到URL记录")
+            if total_items == 0:
+                messagebox.showinfo("提示", "JSON文件中没有记录")
                 self.status_var.set("就绪")
                 return
 
             # 处理提取的数据
-            for i, match in enumerate(matches):
+            for i, item in enumerate(json_data):
                 try:
                     item_id = i + 1
-                    name = match.group(1)
-                    src = match.group(2)
-                    url = match.group(3)
-                    tips = match.group(9)
-                    category_id = int(match.group(8))
-                    domain = match.group(10)  # 提取原始domain
+                    name = item.get("name", f"未命名网站 {item_id}")
+                    url = item.get("url", "")
+                    description = item.get("description", "")
+                    img_src = item.get("img_src", "")
+                    local_filename = item.get("local_filename", f"icon_{item_id}.svg")
+
+                    # 处理分类和分类ID
+                    category = item.get("category", "其他")
+                    category_id = item.get("category_id")
+
+                    # 如果没有提供category_id，尝试从category名称获取
+                    if category_id is None:
+                        # 尝试从分类名称中提取主分类
+                        primary_category = category.split('&')[0]
+                        category_id = CATEGORY_IDS.get(primary_category, 15)  # 默认为"其他"
+
+                    # 确保分类ID有效
+                    if category_id not in ID_TO_CATEGORY:
+                        category_id = 15  # 默认为其他
+                        logger.warning(f"ID {item_id} 的分类ID无效，已设为默认值15")
+
+                    # 使用标准分类名称
+                    category_name = ID_TO_CATEGORY[category_id]
+
+                    background_color = item.get("background_color", "#ffffff")
 
                     # 标准化初始URL格式
                     normalized_url = self.normalize_url(url)
 
-                    category = ID_TO_CATEGORY.get(category_id, "未知")
-                    icon_file = os.path.basename(src)
                     screenshot_file = f"screenshot_{item_id}.png"
 
                     self.url_data[item_id] = {
-                        "id": item_id, "name": name, "src": src, "url": normalized_url,
+                        "id": item_id,
+                        "name": name,
+                        "url": normalized_url,
                         "original_url": url,  # 存储原始URL
-                        "domain": domain,  # 存储原始domain
-                        "tips": tips, "icon_file": icon_file, "screenshot_file": screenshot_file,
-                        "sql": match.group(0), "processed": False, "status": "未处理",
-                        "title": "", "screenshot_path": os.path.join(self.screenshot_dir, screenshot_file),
-                        "category": category
+                        "description": description,
+                        "img_src": img_src,
+                        "local_filename": local_filename,
+                        "category": category_name,  # 使用标准分类名称
+                        "category_id": category_id,
+                        "background_color": background_color,
+                        "screenshot_file": screenshot_file,
+                        "processed": False,
+                        "status": "未处理",
+                        "title": "",
+                        "screenshot_path": os.path.join(self.screenshot_dir, screenshot_file)
                     }
                     self.id_list.append(item_id)
                 except Exception as e:
@@ -509,7 +524,7 @@ class SQLURLBrowser:
                     continue
 
                 # 更新进度
-                self.progress_var.set((i + 1) / total_matches * 100)
+                self.progress_var.set((i + 1) / total_items * 100)
                 self.root.update_idletasks()
 
             # 在Treeview中显示数据
@@ -523,16 +538,17 @@ class SQLURLBrowser:
                     item["id"], name, item["url"], item["category"], status
                 ))
 
-            # 数据加载完成后应用历史记录
+            # 数据加载完成后应用历史记录（移到此处，确保数据已加载）
+            self.load_history()
             self.apply_history_to_ui()
 
             # 显示结果统计
             extracted_count = len(self.url_data)
-            skipped_count = total_matches - extracted_count
-            self.status_var.set(f"处理完成，共找到 {extracted_count} 条URL记录（跳过 {skipped_count} 条）")
+            skipped_count = total_items - extracted_count
+            self.status_var.set(f"处理完成，共找到 {extracted_count} 条记录（跳过 {skipped_count} 条）")
             logger.info(f"处理完成，提取 {extracted_count} 条记录，跳过 {skipped_count} 条")
 
-            message = f"已提取 {extracted_count} 条URL记录\n"
+            message = f"已提取 {extracted_count} 条记录\n"
             if skipped_count > 0:
                 message += f"注意：有 {skipped_count} 条记录因格式问题被跳过"
             messagebox.showinfo("处理结果", message)
@@ -555,6 +571,9 @@ class SQLURLBrowser:
     def normalize_url(self, url):
         """标准化URL格式：确保以http/https开头，以/结尾，无路径参数"""
         # 确保URL以http/https开头
+        if not url:
+            return ""
+
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
 
@@ -601,7 +620,6 @@ class SQLURLBrowser:
             self.domain_var.set("")  # 新增
             self.original_url_var.set("")  # 新增
             self.desc_text.delete(1.0, tk.END)
-            self.url_var.set("")
             self.sql_text.delete(1.0, tk.END)
             self.icon_label.config(image="", text="无数据")
             self.icon_label.image = None
@@ -628,10 +646,10 @@ class SQLURLBrowser:
 
         self.desc_text.delete(1.0, tk.END)
         # 应用历史修改
-        self.desc_text.insert(tk.END, self.temp_desc_changes.get(self.current_id, data["tips"]))
+        self.desc_text.insert(tk.END, self.temp_desc_changes.get(self.current_id, data["description"]))
 
-        self.sql_text.delete(1.0, tk.END)
-        self.sql_text.insert(tk.END, data["sql"])
+        # 生成SQL语句
+        self.generate_sql()
 
         # 加载图标和截图
         self.load_icon(data.copy())
@@ -676,8 +694,8 @@ class SQLURLBrowser:
             self.icon_label.config(text="数据不匹配")
             return
 
-        if data["icon_file"]:
-            icon_path = os.path.join(self.icons_dir, data["icon_file"])
+        if data["local_filename"]:
+            icon_path = os.path.join(self.icons_dir, data["local_filename"])
             if os.path.exists(icon_path):
                 try:
                     # 处理SVG文件
@@ -782,6 +800,47 @@ class SQLURLBrowser:
         else:
             self.screenshot_label.config(text="获取失败" if data.get("status") == "获取失败" else "无截图")
 
+    def generate_sql(self):
+        """生成SQL语句"""
+        if not self.current_id or self.current_id not in self.url_data:
+            self.sql_text.delete(1.0, tk.END)
+            return
+
+        item = self.url_data[self.current_id]
+
+        # 获取可能的修改值
+        title = self.temp_title_changes.get(self.current_id, item.get("title", item["name"]))
+        url = self.temp_url_changes.get(self.current_id, item["url"])
+        desc = self.temp_desc_changes.get(self.current_id, item["description"])
+
+        # 确保URL以斜杠结尾
+        if url and not url.endswith('/'):
+            url_with_slash = f"{url}/"
+        else:
+            url_with_slash = url
+
+        # 提取域名
+        domain = self.extract_domain(url_with_slash)
+
+        # 转义SQL特殊字符
+        escaped_name = title.replace("'", "''")
+        escaped_description = desc.replace("'", "''")
+
+        # 生成指定格式的SQL语句
+        sql = (
+            f"INSERT INTO `mtab`.`linkstore` "
+            f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
+            f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
+            f"VALUES "
+            f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{item['local_filename']}', '{url_with_slash}', "
+            f"'icon', '1x1', '2025-01-01 00:00:00', 0, {item['category_id']}, '{escaped_description}', '{domain}', "
+            f"0, 0, '{item['background_color']}', 0, NULL, NULL, 1, 0);"
+        )
+
+        # 更新SQL文本区域
+        self.sql_text.delete(1.0, tk.END)
+        self.sql_text.insert(tk.END, sql)
+
     # 新增：刷新当前URL的截图
     def refresh_screenshot(self):
         """刷新当前URL的截图"""
@@ -850,6 +909,7 @@ class SQLURLBrowser:
                     self.browser_title_var.set(title)
                     self.load_screenshot(self.url_data[self.current_id].copy())
                     self.status_var.set(f"已刷新 {current_url} 的截图")
+                    self.generate_sql()  # 更新SQL
 
                 self.root.after(0, update_ui)
 
@@ -1006,7 +1066,7 @@ class SQLURLBrowser:
                         new_url = self.normalize_url(current_url)
                         url_needs_update = True
                     elif target_domain != current_domain:
-                        # 处理www.前缀差异（如www.115.com和115.com）
+                        # 处理www.前缀差异（如www.12306.cn和12306.cn）
                         logger.warning(f"URL域名前缀差异: 预期 {target_domain}，实际 {current_domain} (ID: {item_id})")
                         new_url = self.normalize_url(current_url)
                         url_needs_update = True
@@ -1292,6 +1352,8 @@ class SQLURLBrowser:
             self.update_button_states()
             # 自动保存修改记录
             self.save_history()
+            # 更新SQL
+            self.generate_sql()
 
     # 新增：更新URL
     def update_url(self, event=None):
@@ -1332,6 +1394,8 @@ class SQLURLBrowser:
             self.update_button_states()
             # 自动保存修改记录
             self.save_history()
+            # 更新SQL
+            self.generate_sql()
 
     def update_desc(self, event=None):
         """更新网站描述"""
@@ -1340,7 +1404,7 @@ class SQLURLBrowser:
 
         new_desc = self.desc_text.get(1.0, tk.END).strip()
         data = self.url_data[self.current_id]
-        old_desc = data["tips"]
+        old_desc = data["description"]
 
         if new_desc != old_desc:
             self.temp_desc_changes[self.current_id] = new_desc
@@ -1359,6 +1423,8 @@ class SQLURLBrowser:
             self.update_button_states()
             # 自动保存修改记录
             self.save_history()
+            # 更新SQL
+            self.generate_sql()
 
     # 数据管理方法
     def discard_item(self):
@@ -1417,19 +1483,29 @@ class SQLURLBrowser:
             return
 
         try:
-            logger.info(f"开始保存 {len(items_to_save)} 条记录到 {self.save_file}")
+            # 让用户选择保存位置
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".sql",
+                filetypes=[("SQL files", "*.sql"), ("All files", "*.*")],
+                initialfile="mtab_import.sql"
+            )
+
+            if not save_path:
+                return  # 用户取消保存
+
+            logger.info(f"开始保存 {len(items_to_save)} 条记录到 {save_path}")
             # 处理丢弃项的图片
             discarded_count = 0
             for item_id in self.items_to_discard:
                 if item_id in self.url_data:
                     item = self.url_data[item_id]
                     # 移动图标到trash目录
-                    if item["icon_file"]:
-                        icon_path = os.path.join(self.icons_dir, item["icon_file"])
+                    if item["local_filename"]:
+                        icon_path = os.path.join(self.icons_dir, item["local_filename"])
                         if os.path.exists(icon_path):
-                            trash_path = os.path.join(self.trash_dir, item["icon_file"])
+                            trash_path = os.path.join(self.trash_dir, item["local_filename"])
                             if os.path.exists(trash_path):
-                                name, ext = os.path.splitext(item["icon_file"])
+                                name, ext = os.path.splitext(item["local_filename"])
                                 trash_path = os.path.join(self.trash_dir, f"{name}_{int(time.time())}{ext}")
                             os.rename(icon_path, trash_path)
                             logger.info(f"已移动丢弃项图标: {icon_path} -> {trash_path}")
@@ -1442,65 +1518,42 @@ class SQLURLBrowser:
                     discarded_count += 1
 
             # 写入SQL文件
-            with open(self.save_file, 'w', encoding='utf-8') as f:
+            with open(save_path, 'w', encoding='utf-8') as f:
                 f.write("-- 筛选后的URL数据\n")
                 f.write("-- 生成时间: " + time.strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
 
                 for item in items_to_save:
-                    current_sql = item["sql"]
                     item_id = item["id"]
 
-                    # 应用标题修改
-                    if item_id in self.temp_title_changes:
-                        new_title = self.temp_title_changes[item_id]
-                        sql_pattern = re.compile(
-                            r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\()'[^']*'(,\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*[^,]*, \s*[^,]*, \s*'[^']*', \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^)]*\);)",
-                            re.IGNORECASE)
-                        sql_match = sql_pattern.match(current_sql)
+                    # 获取可能的修改值
+                    title = self.temp_title_changes.get(item_id, item.get("title", item["name"]))
+                    url = self.temp_url_changes.get(item_id, item["url"])
+                    desc = self.temp_desc_changes.get(item_id, item["description"])
 
-                        if sql_match:
-                            current_sql = f"{sql_match.group(1)}'{new_title}'{sql_match.group(2)}"
+                    # 确保URL以斜杠结尾
+                    if url and not url.endswith('/'):
+                        url_with_slash = f"{url}/"
+                    else:
+                        url_with_slash = url
 
-                    # 应用URL和domain修改
-                    original_url = re.search(r"INSERT.*?VALUES.*?'[^']*',\s*'[^']*',\s*'([^']+)'", current_sql,
-                                             re.IGNORECASE).group(1)
+                    # 提取域名
+                    domain = self.extract_domain(url_with_slash)
 
-                    # 获取最终URL（考虑用户编辑）
-                    final_url = self.temp_url_changes.get(item_id, item["url"])
+                    # 转义SQL特殊字符
+                    escaped_name = title.replace("'", "''")
+                    escaped_description = desc.replace("'", "''")
 
-                    if final_url != original_url:
-                        # 更新URL
-                        sql_pattern = re.compile(
-                            r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^']*',\s*'[^']*',\s*')([^']*)'(,\s*'[^']*',\s*'[^']*',\s*'[^']*',\s*[^,]*, \s*[^,]*, \s*'[^']*', \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*'[^']*', \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^,]*, \s*[^)]*\);)",
-                            re.IGNORECASE)
-                        sql_match = sql_pattern.match(current_sql)
-
-                        if sql_match:
-                            current_sql = f"{sql_match.group(1)}{final_url}{sql_match.group(2)}"
-
-                        # 更新domain
-                        new_domain = self.extract_domain(final_url)
-                        sql_pattern = re.compile(
-                            r"(INSERT into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*'[^']*', \s*')([^']*)'(\s*,\s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
-                            re.IGNORECASE)
-                        sql_match = sql_pattern.match(current_sql)
-
-                        if sql_match:
-                            current_sql = f"{sql_match.group(1)}{new_domain}{sql_match.group(2)}"
-                            logger.info(f"已更新ID {item_id} 的domain为: {new_domain}")
-
-                    # 应用描述修改
-                    if item_id in self.temp_desc_changes:
-                        new_desc = self.temp_desc_changes[item_id]
-                        sql_pattern = re.compile(
-                            r"(insert into `mtab`.`linkstore`\s*\([^)]*\)\s*values\s*\([^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*,\s*[^)]*, \s*[^)]*, \s*)'[^']*'(\s*,\s*'[^']*', \s*[^)]*, \s*[^)]*, \s*'[^']*', \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*, \s*[^)]*\);)",
-                            re.IGNORECASE)
-                        sql_match = sql_pattern.match(current_sql)
-
-                        if sql_match:
-                            current_sql = f"{sql_match.group(1)}'{new_desc}'{sql_match.group(2)}"
-
-                    f.write(current_sql + "\n\n")
+                    # 生成指定格式的SQL语句
+                    sql = (
+                        f"INSERT INTO `mtab`.`linkstore` "
+                        f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
+                        f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
+                        f"VALUES "
+                        f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{item['local_filename']}', '{url_with_slash}', "
+                        f"'icon', '1x1', '2025-01-01 00:00:00', 0, {item['category_id']}, '{escaped_description}', '{domain}', "
+                        f"0, 0, '{item['background_color']}', 0, NULL, NULL, 1, 0);\n"
+                    )
+                    f.write(sql + "\n")
 
             # 清空临时数据
             self.temp_title_changes.clear()
@@ -1520,10 +1573,10 @@ class SQLURLBrowser:
                         values[4] = "已保存"
                         self.url_tree.item(item_id, values=values)
 
-            self.status_var.set(f"已保存到 {self.save_file}")
-            logger.info(f"成功保存 {len(items_to_save)} 条记录到 {self.save_file}")
+            self.status_var.set(f"已保存到 {save_path}")
+            logger.info(f"成功保存 {len(items_to_save)} 条记录到 {save_path}")
             messagebox.showinfo("成功",
-                                f"已保存 {len(items_to_save)} 条URL记录到 {self.save_file}\n"
+                                f"已保存 {len(items_to_save)} 条URL记录到 {save_path}\n"
                                 f"已处理 {discarded_count} 条丢弃项的图片文件")
         except Exception as e:
             self.status_var.set("保存失败")
@@ -1580,62 +1633,68 @@ class SQLURLBrowser:
             history_data = {
                 "temp_title_changes": self.temp_title_changes,
                 "temp_desc_changes": self.temp_desc_changes,
-                "temp_url_changes": self.temp_url_changes,  # 新增
+                "temp_url_changes": self.temp_url_changes,
                 "items_to_discard": list(self.items_to_discard)
             }
+
+            # 确保目录存在
+            history_dir = os.path.dirname(self.history_file)
+            if not os.path.exists(history_dir):
+                os.makedirs(history_dir)
 
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(history_data, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"已保存修改记录到 {self.history_file}")
+            logger.info(f"已保存修改记录到 {self.history_file}，包含 {len(self.temp_title_changes)} 个标题修改，"
+                        f"{len(self.temp_desc_changes)} 个描述修改，{len(self.temp_url_changes)} 个URL修改，"
+                        f"{len(self.items_to_discard)} 个丢弃项")
         except Exception as e:
-            logger.error(f"保存修改记录失败: {str(e)}")
+            logger.error(f"保存修改记录失败: {str(e)}，错误类型: {type(e).__name__}")
 
     def load_history(self):
-        """从文件加载修改记录并立即应用到UI"""
+        """从文件加载修改记录并应用到UI"""
         if not os.path.exists(self.history_file):
-            logger.info("没有找到历史记录文件")
+            logger.info(f"没有找到历史记录文件: {self.history_file}")
             return
 
         try:
             with open(self.history_file, 'r', encoding='utf-8') as f:
                 history_data = json.load(f)
 
-            # 转换数据类型并处理可能的格式问题
+            # 转换数据类型并过滤无效ID
+            valid_ids = set(self.url_data.keys()) if hasattr(self, 'url_data') else set()
+
             self.temp_title_changes = {
                 int(k): v for k, v in history_data.get("temp_title_changes", {}).items()
-                if isinstance(k, (str, int)) and v and isinstance(v, str)
+                if isinstance(k, (str, int)) and v and isinstance(v, str) and int(k) in valid_ids
             }
             self.temp_desc_changes = {
                 int(k): v for k, v in history_data.get("temp_desc_changes", {}).items()
-                if isinstance(k, (str, int)) and v and isinstance(v, str)
+                if isinstance(k, (str, int)) and v and isinstance(v, str) and int(k) in valid_ids
             }
-            # 新增：加载URL修改记录
             self.temp_url_changes = {
                 int(k): v for k, v in history_data.get("temp_url_changes", {}).items()
-                if isinstance(k, (str, int)) and v and isinstance(v, str)
+                if isinstance(k, (str, int)) and v and isinstance(v, str) and int(k) in valid_ids
             }
             self.items_to_discard = set(
                 int(id) for id in history_data.get("items_to_discard", [])
-                if isinstance(id, (str, int))
+                if isinstance(id, (str, int)) and int(id) in valid_ids
             )
 
-            logger.info(f"已加载历史记录，包含 {len(self.temp_title_changes)} 个标题修改，"
-                        f"{len(self.temp_desc_changes)} 个描述修改，"
-                        f"{len(self.temp_url_changes)} 个URL修改，"  # 新增
+            logger.info(f"已加载历史记录，有效数据包含 {len(self.temp_title_changes)} 个标题修改，"
+                        f"{len(self.temp_desc_changes)} 个描述修改，{len(self.temp_url_changes)} 个URL修改，"
                         f"{len(self.items_to_discard)} 个丢弃项")
 
-            # 加载历史记录后立即更新UI
-            self.apply_history_to_ui()
-
         except Exception as e:
-            logger.error(f"加载历史记录失败: {str(e)}")
-            # 尝试删除损坏的历史文件
+            logger.error(f"加载历史记录失败: {str(e)}，错误类型: {type(e).__name__}")
+            # 尝试备份损坏的历史文件
             try:
-                os.remove(self.history_file)
-                logger.info(f"已删除损坏的历史记录文件: {self.history_file}")
+                if os.path.exists(self.history_file):
+                    backup_path = f"{self.history_file}.bak"
+                    os.rename(self.history_file, backup_path)
+                    logger.info(f"已备份损坏的历史记录文件到: {backup_path}")
             except Exception as e2:
-                logger.warning(f"无法删除损坏的历史记录文件: {str(e2)}")
+                logger.warning(f"无法备份损坏的历史记录文件: {str(e2)}")
 
     def clear_history(self, show_message=True):
         """清空历史记录"""
@@ -1699,5 +1758,5 @@ class SQLURLBrowser:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = SQLURLBrowser(root)
+    app = JSONURLBrowser(root)
     root.mainloop()
