@@ -3,7 +3,7 @@
 # @Author: Kinoko <i@linux.wf>
 # @Date  : 2025/08/01
 # @Desc  : mTab多分类网站书签导入工具（AI）
-# @Func  : 批量获取网站信息，处理URL去重、AI生成标题、描述和分类，图标下载转换压缩SVG，生成JSON和SQL导入语句
+# @Func  : 批量获取网站信息，处理URL去重、AI生成标题、描述和分类，图标下载转换压缩SVG，生成JSON
 
 
 # ============================== 公共配置参数区 ==============================
@@ -87,7 +87,6 @@ REDIRECT_CONFIG = {
 
 # 文件路径配置
 ICON_DIRECTORY = 'icons'
-SQL_OUTPUT_FILE = "mtab_import.sql"
 JSON_OUTPUT_FILE = "mtab_data.json"
 
 # 图片下载配置
@@ -1085,52 +1084,6 @@ def process_category(category: str, url_queue: list, lock: threading.Lock, seen_
             time.sleep(2 + random.uniform(0, 1))
 
 
-def generate_sql_statements(websites: List[WebsiteData]) -> str:
-    """生成SQL导入语句"""
-    # 按分类ID排序，再按名称排序
-    sorted_websites = sorted(
-        websites,
-        key=lambda x: (x.category_id, x.name)
-    )
-
-    sql_statements = []
-    seen_normalized_urls = set()
-
-    for site in sorted_websites:
-        # 确保URL末尾带有斜杠且为小写
-        url_with_slash = site.url.rstrip('/').lower() + '/'
-        normalized = normalize_url(url_with_slash)
-
-        if normalized in seen_normalized_urls:
-            logger.warning(f"生成SQL时发现重复URL，已跳过: {site.url}")
-            continue
-
-        seen_normalized_urls.add(normalized)
-
-        # 转义SQL特殊字符
-        escaped_name = site.name.replace("'", "''")
-        escaped_description = site.description.replace("'", "''")
-
-        # 提取域名（小写）
-        domain_parts = extract(url_with_slash)
-        domain = f"{domain_parts.subdomain}.{domain_parts.registered_domain}" if domain_parts.subdomain else domain_parts.registered_domain
-        domain = domain.lower()
-
-        # 生成SQL语句
-        sql = (
-            f"INSERT INTO `mtab`.`linkstore` "
-            f"(`name`, `src`, `url`, `type`, `size`, `create_time`, `hot`, `area`, `tips`, `domain`, "
-            f"`app`, `install_num`, `bgColor`, `vip`, `custom`, `user_id`, `status`, `group_ids`) "
-            f"VALUES "
-            f"('{escaped_name}', 'https://oss.amogu.cn/icon/website/{site.local_filename}', '{url_with_slash}', "
-            f"'icon', '1x1', '2025-01-01 00:00:00', 0, {site.category_id}, '{escaped_description}', '{domain}', "
-            f"0, 0, '{site.background_color}', 0, NULL, NULL, 1, 0);"
-        )
-        sql_statements.append(sql)
-
-    return "\n".join(sql_statements)
-
-
 def generate_json_data(websites: List[WebsiteData]) -> str:
     """生成JSON数据"""
     # 转换为字典列表
@@ -1234,12 +1187,6 @@ def main() -> None:
         json_content = generate_json_data(processed_data)
         save_file(json_content, JSON_OUTPUT_FILE)
         print(f"JSON数据文件已生成: {JSON_OUTPUT_FILE}")
-
-        # 生成SQL文件
-        sql_content = generate_sql_statements(processed_data)
-        save_file(sql_content, SQL_OUTPUT_FILE)
-        print(f"SQL导入文件已生成: {SQL_OUTPUT_FILE}")
-        print(f"包含 {len(sql_content.split('INSERT')) - 1} 条INSERT语句")
     else:
         logger.warning("未处理任何数据")
 
