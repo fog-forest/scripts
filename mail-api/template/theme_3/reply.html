@@ -1,0 +1,69 @@
+<html>
+<head>
+<style>
+    a{ text-decoration: none;}
+    .m {
+        width: 700px;
+        height: 430px;
+        border-radius: 5px;
+        background: #ffffff;
+        color: #2196f3;
+        border:1px solid #2196f3;
+    }
+    .t {
+        background: #2196f3;
+        padding: 5px;
+        font-size: 1.0em;
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+        color: #fff;
+        border-bottom: 1px dashed #ffffff;
+        text-align: center;
+    }
+    .o {
+        border: 1px dashed;
+        margin: 15px;
+        height: 120px;
+        padding: 5px 5px;
+        border-radius: 5px;
+        color:#2196f3;
+        font-weight:bold;
+        font-size:0.9em;
+    }
+    .h {
+        text-indent:25px;
+        color: #f52a57;
+        font-weight: 400;
+    }
+    .i {
+        margin: 15px;
+        height: 120px;
+        padding: 5px 5px;
+        color:#2196f3;
+        font-weight:bold;
+        font-size:0.9em;
+    }
+</style>
+</head>
+
+<body>
+<div class="m">
+<div class="t">
+用户:{replyAuthor}在{blogName} 《{title}》 博文中对你的评论进行了回复
+</div>
+<div class="o">
+你的评论内容为：
+<p class="h">{text}</p>
+</div>
+<hr  style="border:1px dashed;width:670px;color:d0d0d0;"/>
+<div class="o">
+用户:{replyAuthor}对你的评论回复：
+<p class="h">{replyText}</p>
+</div>
+<div class="i">
+文章链接:<a target="blank" href="{permalink}">查看文章</a><br>
+<p style="color: #7d7d7d;">本邮件为<a target="blank" href="{blogUrl}">{blogName}</a> 自动发送，请勿直接回复.
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,78 @@
+
+<html>
+<head>
+<style>
+	a{ text-decoration: none;}
+	.m {
+		margin: 0 auto;
+		margin-top:50px;
+		width: 600px;
+		height: 400px;
+		border-radius: 5px;
+		background-image: linear-gradient(to top, #2196f3 0%, #00e4c5 100%);
+		color: #ffffff;
+		box-shadow: 0px 0px 15px #2196f3;
+	}
+	.t {
+		background: #2196f3;
+		padding: 5px;
+		font-size: 14px;
+		border-top-left-radius: 5px;
+		border-top-right-radius: 5px;
+		color: #fff;
+		text-align: center;
+		box-shadow: 0px 5px 20px #2196f3;
+	}
+	.o {
+		margin: 15px;
+		height: 120px;
+		padding: 5px 5px;
+		border-radius: 5px;
+		color: #ffffff;
+		font-size: 0.9em;
+	}
+	.h {
+		text-indent: 25px;
+		color: #edff00;
+		border: 1px solid rgba(249, 249, 249, 0.09);
+		padding: 10px;
+		border-radius: 5px;
+		height: 80px;
+	}
+	.i {
+		margin: 15px;
+		padding: 15px 5px;
+		color:#fff;
+		line-height:0.6;
+		font-size:0.9em;
+	}
+	.j {
+		color: #fff;
+		background: #00b0ff;
+		padding: 1px 5px 1px 5px;
+		border-radius: 5px;
+		font-weight: bold;
+	}
+</style>
+</head>
+
+<body>
+<div class="m">
+<div class="t">
+{replyAuthor} 在{blogName} 《{title}》 博文中对你的评论进行了回复
+</div>
+<div class="o">
+你的评论内容为：
+<p class="h">{text}</p>
+</div>
+<div class="o">
+{replyAuthor}  回复了你的评论：
+<p class="h">{replyText}</p>
+</div>
+<div class="i">
+文章链接:<a target="blank" href="{permalink}">查看文章</a>
+<p style="color: #fff;">本邮件为{blogName}自动发送,请勿直接回复 |  <a class="j" href="{permalink}">查看文章</a> |  <a class="j" target="blank" href="{blogUrl}">{blogName}</a></p>
+</div>
+</div>
+</body>
+</html>

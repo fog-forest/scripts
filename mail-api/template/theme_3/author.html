@@ -1,0 +1,74 @@
+<html>
+<head>
+<style>
+    a{ text-decoration: none;}
+    .m {
+        width: 700px;
+        height: 350px;
+        border-radius: 5px;
+        background: #ffffff;
+        color: #2196f3;
+        border:1px solid #2196f3;
+    }
+    .t {
+        background: #2196f3;
+        padding: 5px;
+        font-size: 1.0em;
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+        color: #fff;
+        border-bottom: 1px dashed #ffffff;
+        text-align: center;
+    }
+    .o {
+        border: 1px dashed;
+        margin: 15px;
+        height: 120px;
+        padding: 5px 5px;
+        border-radius: 5px;
+        color:#2196f3;
+        font-weight:bold;
+        font-size:0.9em;
+    }
+    .h {
+        text-indent:25px;
+        color: #f52a57;
+        font-weight: 400;
+    }
+    .x {
+        margin-left: 15px;
+        margin-top: 25px;
+        height: 150px;
+        padding: 5px 5px;
+        color:#2196f3;
+        font-weight:bold;
+        font-size:0.9em;
+    }
+    .c {
+        color: #ffffff;
+        background: #2196f3;
+        border-radius: 5px;
+        padding: 2px 5px 2px 5px;
+    }
+</style>
+</head>
+
+<body>
+<div class="m">
+<div class="t">
+{blogName}：文章 《{title}》有新的评论
+</div>
+<div class="o">
+[{author}] 的评论内容为：
+<p class="h">{text}</p>
+</div>
+<div class="x">
+评论用户：{author}<br>
+评论&ensp;&ensp;IP：{ip}<br>
+评论邮箱：{mail}<br>
+评论地址：<a class="c" href='{permalink}' target='_blank' >查看评论</a><br>
+评论状态：{status} <p style="color:#2196f3;float: right;">操作：<a class="c" href='{manage}' target='_blank' >管理评论</a></p>
+</div>
+</div>
+</body>
+</html>

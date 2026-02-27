@@ -1,0 +1,78 @@
+
+<html>
+<head>
+<style>
+	a{ text-decoration: none;}
+	.m {
+		margin: 0 auto;
+		margin-top:50px;
+		width: 600px;
+		height: 400px;
+		border-radius: 5px;
+		background-image: linear-gradient(to top, #2196f3 0%, #00e4c5 100%);
+		color: #ffffff;
+		box-shadow: 0px 0px 15px #2196f3;
+	}
+	.t {
+		background: #2196f3;
+		padding: 5px;
+		font-size: 14px;
+		border-top-left-radius: 5px;
+		border-top-right-radius: 5px;
+		color: #fff;
+		text-align: center;
+		box-shadow: 0px 5px 20px #2196f3;
+	}
+	.o {
+		margin: 15px;
+		height: 150px;
+		padding: 5px 5px;
+		border-radius: 5px;
+		color: #ffffff;
+		font-size: 0.9em;
+	}
+	.h {
+		text-indent: 25px;
+		color: #edff00;
+		border: 1px solid rgba(249, 249, 249, 0.09);
+		padding: 10px;
+		border-radius: 5px;
+		height: 120px;
+	}
+	.x {
+		margin-left: 15px;
+		margin-top: 10%;
+		padding-right: 15px;
+		color:#ffffff;
+		font-size:0.9em;
+	}
+
+	.c {
+		color: #ffffff;
+		background: #00b0ff;
+		border-radius: 5px;
+		padding: 2px 5px 2px 5px;
+	}
+</style>
+</head>
+
+<body>
+<div class="m">
+<div class="t">
+{blogName}：文章 《{title}》 有新的评论
+</div>
+<div class="o">
+用户 {author} 的评论内容为：
+<p class="h">{text}</p>
+</div>
+<div class="x">
+评论用户：{author}<br>
+评论&ensp;&ensp;IP：{ip}<br>
+评论邮箱：{mail}<br>
+评论状态：{status} <br><br>
+<a class="c" href='{manage}' target='_blank' >管理评论</a>
+</div>
+
+</div>
+</body>
+</html>
