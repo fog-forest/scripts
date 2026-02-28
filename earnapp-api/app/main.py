@@ -66,7 +66,6 @@ def ensure_data_dir_exists():
 def load_uuid_status():
     # 加载UUID状态（防止重启丢失）
     global uuid_status, retry_queue
-    ensure_data_dir_exists()
 
     try:
         if os.path.exists(STATUS_FILE):
@@ -87,8 +86,6 @@ def load_uuid_status():
 
 def save_uuid_status():
     # 保存UUID状态（持久化）
-    ensure_data_dir_exists()
-
     try:
         with status_lock:
             data = {
@@ -447,6 +444,9 @@ def get_uuid_status(uuid):
 
 # 主函数
 if __name__ == "__main__":
+    # 数据目录检查
+    ensure_data_dir_exists()
+
     # 加载历史状态
     load_uuid_status()
 
