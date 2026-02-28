@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # coding=utf8
+# ======================== 全局变量/配置 ========================
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ from datetime import datetime
 import requests
 from flask import Flask, request, jsonify
 
-# 日志配置（简化格式）
+# 日志配置
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,13 +21,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# QMSG配置（从环境变量获取）
+# Flask实例
+app = Flask(__name__)
+
+# QMSG配置
 QMSG_TOKEN = os.getenv('QMSG_TOKEN')
 QMSG_QQ = os.getenv('QMSG_QQ')
 QMSG_BOT = os.getenv('QMSG_BOT')
 QMSG_API = f"https://qmsg.zendee.cn/jsend/{QMSG_TOKEN}" if QMSG_TOKEN else None
 
-app = Flask(__name__)
+# 鉴权Token（必填）
+AUTH_TOKEN = os.getenv('AUTH_TOKEN')
+if not AUTH_TOKEN:
+    raise ValueError("环境变量 AUTH_TOKEN 未配置，请设置后启动服务！")
 
 # 核心配置
 uuid_queue = queue.Queue()  # 主处理队列
@@ -36,22 +43,19 @@ MAX_RETRY_COUNT = 3  # 最大重试次数
 RETRY_INTERVALS = [5, 15, 30]  # 重试间隔（秒）
 DATA_DIR = "/data"  # 数据目录
 STATUS_FILE = os.path.join(DATA_DIR, "uuid_status.json")  # 状态文件
-status_lock = threading.Lock()  # 状态锁
-retry_lock = threading.Lock()  # 重试队列锁
 
-# 鉴权Token（必填）
-AUTH_TOKEN = os.getenv('AUTH_TOKEN')
-if not AUTH_TOKEN:
-    raise ValueError("环境变量 AUTH_TOKEN 未配置，请设置后启动服务！")
+# 线程锁
+status_lock = threading.Lock()
+retry_lock = threading.Lock()
+notify_lock = threading.Lock()
 
 # 重复提醒控制
 token_expired_notified = False
-notify_lock = threading.Lock()
 
 
-# 工具函数
+# ======================== 工具函数 ========================
 def ensure_data_dir_exists():
-    # 创建/data目录
+    # 创建/data目录（仅启动时调用）
     try:
         if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR, mode=0o755)
@@ -66,7 +70,6 @@ def ensure_data_dir_exists():
 def load_uuid_status():
     # 加载UUID状态（防止重启丢失）
     global uuid_status, retry_queue
-
     try:
         if os.path.exists(STATUS_FILE):
             with open(STATUS_FILE, 'r', encoding='utf8') as f:
@@ -102,7 +105,7 @@ def save_uuid_status():
 
 
 def send_qmsg_notification(message):
-    # 发送QQ消息提醒
+    # 发送QQ消息提醒（Token过期/队列堵塞）
     if not all([QMSG_TOKEN, QMSG_QQ, QMSG_BOT]):
         logger.warning("QMSG配置不完整，跳过消息发送")
         return False
@@ -130,29 +133,9 @@ def send_qmsg_notification(message):
         return False
 
 
-def check_pending_uuid():
-    # 检查长时间未处理的UUID并告警
-    while True:
-        try:
-            now = time.time()
-            pending_uuids = []
-            with status_lock:
-                for uuid, status_info in uuid_status.items():
-                    if status_info['status'] == 'pending' and now - status_info['create_time'] > 300:
-                        pending_uuids.append(uuid)
-
-            if pending_uuids:
-                msg = f"⚠️ {len(pending_uuids)}个UUID长时间未处理 ⚠️\nUUID列表: {pending_uuids[:10]}..."
-                send_qmsg_notification(msg)
-                logger.warning(f"长时间未处理UUID: {pending_uuids}")
-
-            time.sleep(60)
-        except Exception as e:
-            logger.error(f"检查待处理UUID异常: {str(e)}")
-
-
-# 鉴权装饰器
+# ======================== 鉴权装饰器 ========================
 def auth_required(f):
+    # 接口鉴权（验证AUTH_TOKEN）
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get('Authorization')
         custom_auth_header = request.headers.get('X-Auth-Token')
@@ -184,7 +167,28 @@ def auth_required(f):
     return wrapper
 
 
-# 重试处理线程
+# ======================== 核心业务函数 ========================
+def check_pending_uuid():
+    # 检查队列堵塞（长时间未处理UUID）并告警
+    while True:
+        try:
+            now = time.time()
+            pending_uuids = []
+            with status_lock:
+                for uuid, status_info in uuid_status.items():
+                    if status_info['status'] == 'pending' and now - status_info['create_time'] > 300:
+                        pending_uuids.append(uuid)
+
+            if pending_uuids:
+                msg = f"⚠️ {len(pending_uuids)}个UUID长时间未处理（队列堵塞）⚠️\nUUID列表: {pending_uuids[:10]}..."
+                send_qmsg_notification(msg)
+                logger.warning(f"长时间未处理UUID: {pending_uuids}")
+
+            time.sleep(60)
+        except Exception as e:
+            logger.error(f"检查待处理UUID异常: {str(e)}")
+
+
 def process_retry_queue():
     # 处理失败重试的UUID
     logger.info("重试队列处理线程启动")
@@ -207,9 +211,7 @@ def process_retry_queue():
                                 uuid_status[uuid]['status'] = 'failed'
                                 uuid_status[uuid]['fail_reason'] = fail_reason
                                 uuid_status[uuid]['retry_count'] = retry_count
-                        msg = f"❌ UUID永久失败 ❌\nUUID: {uuid}\n原因: {fail_reason}\n重试: {retry_count}次"
-                        send_qmsg_notification(msg)
-                        logger.error(f"UUID {uuid} 重试{retry_count}次失败，放弃")
+                        logger.error(f"UUID {uuid} 重试{retry_count}次失败，放弃 | 原因: {fail_reason}")
                         del retry_queue[uuid]
                         save_uuid_status()
                         continue
@@ -235,7 +237,6 @@ def process_retry_queue():
             logger.error(f"重试队列处理异常: {str(e)}")
 
 
-# 主处理线程
 def process_uuids():
     # 消费队列中的UUID并调用注册API
     logger.info("UUID主处理线程启动")
@@ -263,35 +264,43 @@ def process_uuids():
                 response = call_api(uuid)
                 process_time = round(time.time() - start_time, 2)
 
+                # 核心逻辑：特殊错误判定为成功
                 if "error" in response:
-                    logger.error(f"UUID {uuid} 处理失败 | 耗时 {process_time}s | 错误: {response['error']}")
+                    if response['error'] == "This device was already linked":
+                        logger.info(f"UUID {uuid} 已注册成功（重复注册） | 耗时 {process_time}s")
+                        with retry_lock:
+                            if uuid in retry_queue:
+                                del retry_queue[uuid]
+                        with status_lock:
+                            uuid_status[uuid]['status'] = 'success'
+                            uuid_status[uuid]['result'] = response
+                            uuid_status[uuid]['complete_time'] = time.time()
+                        save_uuid_status()
+                        uuid_queue.task_done()
+                        time.sleep(3)
+                        continue
 
-                    # 加入重试队列
+                    # 其他错误判定为失败
+                    logger.error(f"UUID {uuid} 处理失败 | 耗时 {process_time}s | 错误: {response['error']}")
                     with retry_lock:
                         retry_queue[uuid] = [
                             retry_queue[uuid][0],
                             time.time(),
                             response['error']
                         ]
-
                     with status_lock:
                         uuid_status[uuid]['status'] = 'failed'
                         uuid_status[uuid]['fail_reason'] = response['error']
-
                     save_uuid_status()
                 else:
                     logger.info(f"UUID {uuid} 处理成功 | 耗时 {process_time}s")
-
-                    # 处理成功，移除重试队列
                     with retry_lock:
                         if uuid in retry_queue:
                             del retry_queue[uuid]
-
                     with status_lock:
                         uuid_status[uuid]['status'] = 'success'
                         uuid_status[uuid]['result'] = response
                         uuid_status[uuid]['complete_time'] = time.time()
-
                     save_uuid_status()
 
                 uuid_queue.task_done()
@@ -302,7 +311,6 @@ def process_uuids():
             logger.error(f"UUID主处理线程异常: {str(e)}")
 
 
-# API调用函数
 def call_api(uuid):
     # 调用EarnAPP设备注册API
     global token_expired_notified
@@ -311,7 +319,6 @@ def call_api(uuid):
     xsrf_token = os.getenv('XSRF_TOKEN')
     brd_sess_id = os.getenv('BRD_SESS_ID')
 
-    # 检查必要参数
     if not xsrf_token:
         logger.error("XSRF_TOKEN未配置")
         return {"error": "XSRF_TOKEN not configured"}
@@ -342,7 +349,6 @@ def call_api(uuid):
                     notify_msg = f"⚠️ EarnApp Token过期 ⚠️\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nUUID: {uuid}"
                     send_qmsg_notification(notify_msg)
                     token_expired_notified = True
-
             return {"error": "EarnApp Token过期，已发送提醒，请更新认证信息"}
 
         if response.status_code == 200:
@@ -364,7 +370,7 @@ def call_api(uuid):
         return {"error": str(e)}
 
 
-# 注册接口
+# ======================== API接口函数 ========================
 @app.route('/api/register', methods=['POST'])
 @auth_required
 def get_request_result():
@@ -399,7 +405,6 @@ def get_request_result():
                     "uuid": uuid,
                     "status": "processing"
                 }), 202
-        # 新增UUID
         uuid_status[uuid] = {
             'status': 'pending',
             'create_time': now,
@@ -421,7 +426,6 @@ def get_request_result():
     }), 202
 
 
-# 查询UUID状态接口
 @app.route('/api/uuid/status/<uuid>', methods=['GET'])
 @auth_required
 def get_uuid_status(uuid):
@@ -442,12 +446,10 @@ def get_uuid_status(uuid):
     }), 200
 
 
-# 主函数
+# ======================== 主函数 ========================
 if __name__ == "__main__":
-    # 数据目录检查
+    # 初始化
     ensure_data_dir_exists()
-
-    # 加载历史状态
     load_uuid_status()
 
     # 检查必要环境变量
@@ -461,7 +463,7 @@ if __name__ == "__main__":
     threading.Thread(target=process_retry_queue, name="Retry-Processor", daemon=True).start()
     threading.Thread(target=check_pending_uuid, name="Pending-Checker", daemon=True).start()
 
-    # 启动Flask服务
+    # 启动服务
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Flask服务启动 | 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
