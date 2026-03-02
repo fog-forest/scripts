@@ -3,7 +3,7 @@
 """
 EarnApp设备注册API
 - 串行处理UUID，兼容EarnApp官方返回
-- 429错误按15/30/60秒阶梯重试
+- 429错误按15/30/60/180/300秒阶梯重试
 - 启动/Token异常发送告警通知，确保关键状态及时感知
 - 提供注册和状态查询接口，鉴权保护
 """
@@ -47,7 +47,7 @@ uuid_status = {}
 DATA_DIR = "/data"
 STATUS_FILE = os.path.join(DATA_DIR, "uuid_status.json")
 API_CALL_INTERVAL = 5  # API调用间隔（秒）
-TOO_MANY_REQUESTS_RETRIES = [15, 30, 60]  # 429错误重试间隔
+TOO_MANY_REQUESTS_RETRIES = [15, 30, 60, 180, 300]  # 429错误重试间隔
 MAX_429_RETRY_COUNT = len(TOO_MANY_REQUESTS_RETRIES)  # 最大429重试次数
 
 # 线程锁
