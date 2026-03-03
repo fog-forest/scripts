@@ -1,101 +1,215 @@
-# EarnAPP 平台设备注册API
+# EarnAPP 设备注册API服务
 
-### 说明
+EarnAPP 平台设备注册自动化工具，基于官方接口二次封装，提供标准化API服务，解决批量注册场景下的稳定性、可靠性问题。
 
-EarnAPP 平台设备无法自动注册，需手动通过链接添加。本工具通过抓包获取注册设备的核心接口，二次封装为标准化 API，增加 Header
-Token 鉴权提升接口安全性，并新增**异步队列处理、失败自动重试、状态持久化、异常告警**等核心能力，解决批量注册时的稳定性和可靠性问题。
+## 核心优势
 
-### 核心特性
+| 特性       | 说明                                             |
+|----------|------------------------------------------------|
+| 🔒 接口鉴权  | 支持 Bearer Token / 自定义 Header Token 双重鉴权，防止接口滥用 |
+| 🚀 异步处理  | UUID 加入队列异步串行处理，避免接口阻塞，支持批量提交                  |
+| 🔄 智能重试  | 429限流/网络异常自动重试（最大3次），可配置重试间隔                   |
+| 💾 状态持久化 | UUID 处理状态本地持久化，服务重启不丢失历史数据                     |
+| 🚨 异常告警  | Token过期/注册失败/长时间未处理自动推送QQ告警                    |
+| 🔍 状态查询  | 支持查询单个UUID处理状态（成功/失败/处理中/队列中）                  |
+| ⚡ 幂等设计   | 已成功/处理中的UUID重复提交自动过滤，避免重复处理                    |
 
-- ✅ 接口鉴权：支持 Bearer Token / 自定义 Header Token 双重鉴权方式
-- ✅ 异步处理：UUID 加入队列异步处理，避免接口阻塞
-- ✅ 失败重试：注册失败自动重试（最多3次，间隔5/15/30秒）
-- ✅ 状态持久化：UUID 处理状态保存到 /data 目录，程序重启不丢失
-- ✅ 异常告警：Token 过期/UUID 永久失败/长时间未处理自动发送 QQ 告警
-- ✅ 状态查询：支持查询单个 UUID 的处理状态（成功/失败/处理中）
-- ✅ 幂等性：已成功/处理中的 UUID 重复提交自动过滤
+## 快速部署
 
-### 部署
+### 环境准备
 
-#### 1. 环境准备
+#### 必要参数（必填）
 
-- **必要参数获取**：
-    - `XSRF_TOKEN`/`BRD_SESS_ID`：登录 EarnAPP 官网，按 F12 打开开发者工具 → 应用 → Cookie 中可获取；
-    - `AUTH_TOKEN`：自定义的接口鉴权 Token（任意字符串，用于保护接口不被滥用），必填；
-- **可选告警参数**（QMSG 机器人，用于接收异常通知）：
-    - `QMSG_TOKEN`：QMSG 机器人 Token（获取地址：<https://qmsg.zendee.cn/>）；
-    - `QMSG_QQ`：接收告警的 QQ 号；
-    - `QMSG_BOT`：QMSG 机器人 ID（默认填 12345 即可）。
+| 参数名           | 获取方式                                    |
+|---------------|-----------------------------------------|
+| `XSRF_TOKEN`  | 登录EarnAPP官网 → F12开发者工具 → 应用 → Cookie中获取 |
+| `BRD_SESS_ID` | 同上                                      |
+| `AUTH_TOKEN`  | 自定义任意字符串，用于接口鉴权                         |
 
-#### 2. 容器部署（推荐）
+#### 可选告警参数（QMSG机器人）
+
+| 参数名          | 说明                                         |
+|--------------|--------------------------------------------|
+| `QMSG_TOKEN` | QMSG机器人Token（获取地址：https://qmsg.zendee.cn/） |
+| `QMSG_QQ`    | 接收告警的QQ号                                   |
+| `QMSG_BOT`   | QMSG机器人ID（默认填12345即可）                      |
+
+### Docker部署（推荐）
 
 ```bash
-# 启动容器（替换下方的 your_xxx 为实际值）
+# 启动容器（替换占位符为实际值）
 docker run -d \
   -p 5000:5000 \
   --name earnapp-api \
   --restart=always \
-  -v earnapp-data:/data  # 挂载数据卷，持久化 UUID 状态（可选但推荐）
-  -e PORT=5000 \
+  -v earnapp-data:/data \
+  # 核心认证参数
   -e XSRF_TOKEN="your_xsrf_token" \
   -e BRD_SESS_ID="your_brd_sess_id" \
   -e AUTH_TOKEN="your_custom_auth_token" \
-  # 以下为可选告警参数，不需要可删除
-  -e QMSG_TOKEN="your_qmsg_token" \
-  -e QMSG_QQ="your_qq_number" \
-  -e QMSG_BOT="12345" \
+  # 代理基础配置
+  -e PROXY_HOST="proxy.example.com" \  # 代理服务器地址
+  -e PROXY_PORT="8080" \               # 代理端口
+  # 代理认证（根据服务商要求配置）
+  -e PROXY_USER_TPL="user_{RND:8}" \   # 用户名模板（支持{RND:N}随机字符串）
+  -e PROXY_PASS_TPL="pass_{RND:8}" \   # 密码模板
+  -e RND_CHARSET="abcdefghijklmnopqrstuvwxyz0123456789" \  # 随机字符集
+  # 重试策略优化（针对429）
+  -e API_CALL_INTERVAL="10" \          # API调用间隔（默认5秒，建议改为10-15秒）
+  -e MAX_PROXY_RETRY_COUNT="3" \       # 429重试次数（默认2次，建议改为3次）
   fogforest/earnapp-api
 ```
 
-#### 3. 接口调用
+## 接口文档
 
-##### 3.1 注册 UUID（核心接口）
+### 1. 注册UUID（核心接口）
+
+提交UUID到处理队列，异步完成注册。
+
+**请求地址**：`POST /api/register`  
+**请求头**：
+
+- Content-Type: application/json
+- Authorization: Bearer {AUTH_TOKEN} （或 X-Auth-Token: {AUTH_TOKEN}）
+
+**请求体**：
+
+```json
+{
+  "uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"
+}
+```
+
+### 2. 查询UUID状态
+
+查询指定UUID的处理状态。
+
+**请求地址**：`GET /api/uuid/status/{uuid}`  
+**请求头**：
+
+- Authorization: Bearer {AUTH_TOKEN} （或 X-Auth-Token: {AUTH_TOKEN}）
+
+### 3. 健康检查
+
+查看服务运行状态，无需鉴权。
+
+**请求地址**：`GET /api/health`
+
+## 响应说明
+
+### 通用响应格式
+
+```json
+{
+  "code": 0,
+  // 响应码（0=成功，其他=异常）
+  "message": "描述信息",
+  "data": {}
+  // 业务数据（可选）
+}
+```
+
+### 详细响应示例
+
+| 场景        | HTTP状态码 | 响应示例                                                                                                                              |
+|-----------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
+| UUID已成功注册 | 200     | `{"code":0,"message":"UUID already registered successfully","data":{"uuid":"xxx","status":"success"}}`                            |
+| UUID已入队等待 | 202     | `{"code":0,"message":"UUID received, processing will start shortly","data":{"uuid":"xxx","queue_position":1,"status":"pending"}}` |
+| UUID正在处理  | 202     | `{"code":0,"message":"UUID current status: processing","data":{"uuid":"xxx","status":"processing"}}`                              |
+| 重复提交UUID  | 200     | `{"code":1004,"message":"UUID is already in processing queue","data":{"uuid":"xxx","status":"in_queue"}}`                         |
+| 参数缺失      | 400     | `{"code":1001,"message":"Parameter error, missing required UUID field"}`                                                          |
+| 鉴权失败      | 401     | `{"code":1002,"message":"Invalid authentication token"}`                                                                          |
+| UUID不存在   | 404     | `{"code":1003,"message":"UUID not found"}`                                                                                        |
+
+### 健康检查响应示例
+
+```json
+{
+  "code": 0,
+  "message": "Service is running normally",
+  "data": {
+    "service": "earnapp-uuid-register",
+    "status": "running",
+    "timestamp": "2026-03-03 16:00:00",
+    "queue_size": 5,
+    "queue_unique_count": 5,
+    "recorded_uuids": 120,
+    "proxy_configured": false
+  }
+}
+```
+
+## 告警说明
+
+配置QMSG参数后，程序会在以下场景自动发送QQ告警：
+
+1. **Token过期告警**：EarnApp认证Token过期（API返回403），仅发送1次避免刷屏
+2. **注册失败告警**：UUID重试3次仍失败，推送失败原因+UUID
+3. **长时间未处理告警**：UUID待处理超过5分钟，推送未处理列表
+
+## 使用示例
+
+### 注册UUID
 
 ```bash
-# 格式1：标准 Bearer Token（推荐）
+# Bearer Token方式（推荐）
 curl -X POST http://127.0.0.1:5000/api/register \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your_custom_auth_token" \
+  -H "Authorization: Bearer your_auth_token" \
   -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"}'
 
-# 格式2：自定义 Header Token
+# 自定义Header Token方式
 curl -X POST http://127.0.0.1:5000/api/register \
   -H "Content-Type: application/json" \
-  -H "X-Auth-Token: your_custom_auth_token" \
+  -H "X-Auth-Token: your_auth_token" \
   -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"}'
 ```
 
-##### 3.2 查询 UUID 处理状态
+### 查询UUID状态
 
 ```bash
 curl -X GET http://127.0.0.1:5000/api/uuid/status/sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1 \
-  -H "Authorization: Bearer your_custom_auth_token"
+  -H "Authorization: Bearer your_auth_token"
 ```
 
-#### 4. 响应说明
+### 健康检查
 
-| 状态码 | 响应示例                                                                                                             | 说明                |
-|-----|------------------------------------------------------------------------------------------------------------------|-------------------|
-| 200 | `{"message":"UUID already registered successfully","uuid":"xxx","status":"success"}`                             | UUID 已注册成功        |
-| 202 | `{"message":"UUID received, processing will start shortly.","uuid":"xxx","queue_position":1,"status":"pending"}` | UUID 已接收，等待处理     |
-| 202 | `{"message":"UUID is being processed","uuid":"xxx","status":"processing"}`                                       | UUID 正在处理中        |
-| 400 | `{"error":"UUID is required"}`                                                                                   | 请求参数缺失（未传 uuid）   |
-| 401 | `{"error":"Unauthorized","message":"Invalid authentication token..."}`                                           | 鉴权失败（Token 错误/未传） |
-| 404 | `{"error":"UUID not found"}`                                                                                     | UUID 未找到          |
+```bash
+curl -X GET http://127.0.0.1:5000/api/health
+```
 
-### 告警说明
+## 常见问题
 
-程序会在以下场景自动发送 QQ 告警（需配置 QMSG 参数）：
+### Q1: Token过期后程序会无限处理队列吗？
 
-1. **Token 过期告警**：EarnApp 认证 Token 过期（API 返回 403），仅发送 1 次，避免刷屏；
-2. **UUID 永久失败告警**：UUID 重试 3 次仍注册失败，发送失败原因+UUID；
-3. **长时间未处理告警**：UUID 处于待处理状态超过 5 分钟，发送未处理 UUID 列表。
+不会。每个UUID最多处理1次主队列+3次重试，达到最大重试次数后标记为永久失败；Token过期告警仅发送1次，避免刷屏。
 
-### 常见问题
+### Q2: 如何恢复Token过期后的处理？
 
-1. **Token 过期后程序会无限处理队列吗？**
-    - 不会。每个 UUID 最多处理 1 次主队列 + 3 次重试，达到最大重试次数后标记为永久失败，停止处理；Token 过期告警仅发送 1 次。
-2. **如何恢复 Token 过期后的处理？**
-    - 更新容器的 `XSRF_TOKEN`/`BRD_SESS_ID` 环境变量，重启容器即可。
-3. **UUID 状态保存在哪里？**
-    - 容器内 `/data/uuid_status.json`，建议挂载数据卷避免重启丢失。
+更新容器的`XSRF_TOKEN`/`BRD_SESS_ID`环境变量，重启容器即可继续处理队列中的UUID。
+
+### Q3: UUID状态保存在哪里？
+
+容器内`/data/uuid_status.json`文件，建议通过`-v earnapp-data:/data`挂载数据卷，避免容器重启丢失数据。
+
+### Q4: 支持代理吗？
+
+仅支持 SOCKS 协议，用于解决官方接口频繁429错误的问题，可通过以下环境变量配置代理：
+
+```bash
+-e PROXY_HOST="proxy.example.com" \
+-e PROXY_PORT="8080" \
+-e PROXY_USER_TPL="user_{RND:8}" \  # 支持{RND:N}随机字符串
+-e PROXY_PASS_TPL="pass_{RND:8}" \
+```
+
+## 响应码速查表
+
+| 响应码  | 含义               |
+|------|------------------|
+| 0    | 成功               |
+| 1001 | 参数错误             |
+| 1002 | 未授权（Token错误/未提供） |
+| 1003 | UUID不存在          |
+| 1004 | UUID已在队列中        |
+| 9999 | 系统错误             |
