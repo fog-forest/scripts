@@ -8,9 +8,9 @@ EarnAPP 平台设备注册自动化工具，基于官方接口二次封装，提
 |----------|------------------------------------------------|
 | 🔒 接口鉴权  | 支持 Bearer Token / 自定义 Header Token 双重鉴权，防止接口滥用 |
 | 🚀 异步处理  | UUID 加入队列异步串行处理，避免接口阻塞，支持批量提交                  |
-| 🔄 智能重试  | 429限流/网络异常自动重试（最大3次），可配置重试间隔                   |
+| 🔄 智能重试  | 429限流/网络异常自动重试（最大2次），固定调用间隔防限流                 |
 | 💾 状态持久化 | UUID 处理状态本地持久化，服务重启不丢失历史数据                     |
-| 🚨 异常告警  | Token过期/注册失败/长时间未处理自动推送QQ告警                    |
+| 🚨 异常告警  | Token过期（连续3次403）自动推送QQ告警，服务启动也会推送通知            |
 | 🔍 状态查询  | 支持查询单个UUID处理状态（成功/失败/处理中/队列中）                  |
 | ⚡ 幂等设计   | 已成功/处理中的UUID重复提交自动过滤，避免重复处理                    |
 
@@ -34,6 +34,16 @@ EarnAPP 平台设备注册自动化工具，基于官方接口二次封装，提
 | `QMSG_QQ`    | 接收告警的QQ号                                   |
 | `QMSG_BOT`   | QMSG机器人ID（默认填12345即可）                      |
 
+#### 可选代理参数
+
+| 参数名              | 说明                        |
+|------------------|---------------------------|
+| `PROXY_HOST`     | 代理服务器地址                   |
+| `PROXY_PORT`     | 代理服务器端口                   |
+| `PROXY_USER_TPL` | 代理账号模板（支持{RND:N}随机字符串占位符） |
+| `PROXY_PASS_TPL` | 代理密码模板（支持{RND:N}随机字符串占位符） |
+| `RND_CHARSET`    | 随机字符集（默认：字母+数字）           |
+
 ### Docker部署（推荐）
 
 ```bash
@@ -43,21 +53,38 @@ docker run -d \
   --name earnapp-api \
   --restart=always \
   -v earnapp-data:/data \
-  # 核心认证参数
+  # 核心认证参数（必填）
   -e XSRF_TOKEN="your_xsrf_token" \
   -e BRD_SESS_ID="your_brd_sess_id" \
   -e AUTH_TOKEN="your_custom_auth_token" \
-  # 代理基础配置
-  -e PROXY_HOST="proxy.example.com" \  # 代理服务器地址
-  -e PROXY_PORT="8080" \               # 代理端口
-  # 代理认证（根据服务商要求配置）
-  -e PROXY_USER_TPL="user_{RND:8}" \   # 用户名模板（支持{RND:N}随机字符串）
-  -e PROXY_PASS_TPL="pass_{RND:8}" \   # 密码模板
-  -e RND_CHARSET="abcdefghijklmnopqrstuvwxyz0123456789" \  # 随机字符集
-  # 重试策略优化（针对429）
-  -e API_CALL_INTERVAL="10" \          # API调用间隔（默认5秒，建议改为10-15秒）
-  -e MAX_PROXY_RETRY_COUNT="3" \       # 429重试次数（默认2次，建议改为3次）
+  # 代理配置（可选）
+  -e PROXY_HOST="proxy.example.com" \
+  -e PROXY_PORT="8080" \
+  -e PROXY_USER_TPL="user_{RND:8}" \
+  -e PROXY_PASS_TPL="pass_{RND:8}" \
+  -e RND_CHARSET="abcdefghijklmnopqrstuvwxyz0123456789" \
+  # 服务端口（可选，默认5000）
+  -e PORT="5000" \
   fogforest/earnapp-api
+```
+
+### 手动部署
+
+```bash
+# 克隆代码
+git clone <仓库地址>
+cd earnapp-register-service
+
+# 安装依赖
+pip install flask requests
+
+# 设置环境变量（Linux/Mac）
+export XSRF_TOKEN="your_xsrf_token"
+export BRD_SESS_ID="your_brd_sess_id"
+export AUTH_TOKEN="your_custom_auth_token"
+
+# 启动服务
+python earnapp_register.py
 ```
 
 ## 接口文档
@@ -102,10 +129,8 @@ docker run -d \
 ```json
 {
   "code": 0,
-  // 响应码（0=成功，其他=异常）
   "message": "描述信息",
   "data": {}
-  // 业务数据（可选）
 }
 ```
 
@@ -143,9 +168,8 @@ docker run -d \
 
 配置QMSG参数后，程序会在以下场景自动发送QQ告警：
 
-1. **Token过期告警**：EarnApp认证Token过期（API返回403），仅发送1次避免刷屏
-2. **注册失败告警**：UUID重试3次仍失败，推送失败原因+UUID
-3. **长时间未处理告警**：UUID待处理超过5分钟，推送未处理列表
+1. **Token过期告警**：连续3次API返回403错误（Token过期），触发一次告警后不再重复推送
+2. **服务启动通知**：服务启动时推送基础配置信息，确认服务正常运行
 
 ## 使用示例
 
@@ -178,28 +202,41 @@ curl -X GET http://127.0.0.1:5000/api/uuid/status/sdk-node-7a3b43f516a3490d8ba4c
 curl -X GET http://127.0.0.1:5000/api/health
 ```
 
+## 核心固定配置说明
+
+以下参数为代码内置固定值，**不支持通过环境变量修改**，如需调整需修改源码后重新部署：
+
+| 参数名                            | 固定值 | 说明                    |
+|--------------------------------|-----|-----------------------|
+| `API_CALL_INTERVAL`            | 5秒  | 每次API调用间隔，防止触发频率限制    |
+| `MAX_PROXY_RETRY_COUNT`        | 2次  | 遇到429限流错误时的最大重试次数     |
+| `TOKEN_EXPIRE_ALERT_THRESHOLD` | 3次  | 连续403错误触发Token过期告警的阈值 |
+
 ## 常见问题
 
 ### Q1: Token过期后程序会无限处理队列吗？
 
-不会。每个UUID最多处理1次主队列+3次重试，达到最大重试次数后标记为永久失败；Token过期告警仅发送1次，避免刷屏。
+不会。遇到429限流错误仅重试2次，遇到403 Token过期错误会触发告警并停止计数，不会无限重试；已过期的Token需要手动更新后重启服务。
 
 ### Q2: 如何恢复Token过期后的处理？
 
-更新容器的`XSRF_TOKEN`/`BRD_SESS_ID`环境变量，重启容器即可继续处理队列中的UUID。
+1. 更新环境变量中的`XSRF_TOKEN`和`BRD_SESS_ID`
+2. 重启服务/容器
+3. 队列中的UUID会自动继续处理
 
 ### Q3: UUID状态保存在哪里？
 
-容器内`/data/uuid_status.json`文件，建议通过`-v earnapp-data:/data`挂载数据卷，避免容器重启丢失数据。
+状态文件存储在`/data/uuid_status.json`，采用原子写入机制防止文件损坏。Docker部署时建议通过`-v earnapp-data:/data`
+挂载数据卷，避免数据丢失。
 
 ### Q4: 支持代理吗？
 
-仅支持 SOCKS 协议，用于解决官方接口频繁429错误的问题，可通过以下环境变量配置代理：
+支持HTTP/HTTPS代理，用于解决429限流问题，配置示例：
 
 ```bash
 -e PROXY_HOST="proxy.example.com" \
 -e PROXY_PORT="8080" \
--e PROXY_USER_TPL="user_{RND:8}" \  # 支持{RND:N}随机字符串
+-e PROXY_USER_TPL="user_{RND:8}" \  # {RND:N}会生成N位随机字符串
 -e PROXY_PASS_TPL="pass_{RND:8}" \
 ```
 
@@ -213,3 +250,10 @@ curl -X GET http://127.0.0.1:5000/api/health
 | 1003 | UUID不存在          |
 | 1004 | UUID已在队列中        |
 | 9999 | 系统错误             |
+
+### 总结
+
+1. 该服务核心解决EarnAPP批量注册UUID的稳定性问题，提供异步处理、智能重试、状态持久化等关键能力，核心限流/重试参数为代码内置固定值
+2. 部署方式支持Docker（推荐）和手动部署，核心依赖`XSRF_TOKEN`/`BRD_SESS_ID`/`AUTH_TOKEN`三个必填参数
+3. 接口设计简洁，包含注册、查询、健康检查三类接口，支持双重鉴权方式，响应格式统一且易解析
+4. 代理配置支持随机字符串占位符，可适配动态代理认证场景，429限流自动重试（最多2次）提升注册成功率
