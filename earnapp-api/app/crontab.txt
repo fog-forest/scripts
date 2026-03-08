@@ -1,0 +1,1 @@
+0 */1 * * * python /app/delete.py --banned >> /app/delete_logs.txt 2>&1
