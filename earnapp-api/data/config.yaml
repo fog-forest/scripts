@@ -1,0 +1,36 @@
+global:
+  # 全局认证令牌
+  auth_token: "AUTH_TOKEN_XXXXXX"
+
+# 多账号列表 - 每个账号独立配置Cookie
+accounts:
+  - name: account-01
+    cookie:
+      # 浏览器F12获取
+      xsrf_token: "XSRF_TOKEN_01_XXXX"
+      brd_sess_id: "BRD_SESS_ID_01_XXXX"
+  - name: account-02
+    cookie:
+      xsrf_token: "XSRF_TOKEN_02_XXXX"
+      brd_sess_id: "BRD_SESS_ID_02_XXXX"
+
+# 告警配置 - 全局生效
+alarm:
+  # 告警总开关：true=开启，false=关闭
+  enabled: true
+  # QMSG推送配置（QQ消息告警）
+  qmsg:
+    token: "QMSG_TOKEN_XXXXXX"
+    qq: "1234567890" # 接收告警的QQ号
+    bot_id: "BOT_ID_XXXX" # 推送机器人ID
+
+# 代理配置 - 全局生效
+proxy:
+  host: "proxy.example.com" # 代理服务器地址
+  port: 3010 # 代理端口（数字类型）
+  # 代理账号模板（{RND:8} 表示生成8位随机数）
+  user_template: "user-prefix-{RND:8}-suffix-XXXX"
+  # 代理密码
+  password_template: "PROXY_PWD_XXXXXX"
+  # 生成随机数的字符集（字母+数字）
+  random_charset: abcdefghijklmnopqrstuvwxyz0123456789
