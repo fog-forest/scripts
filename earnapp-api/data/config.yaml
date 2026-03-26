@@ -1,6 +1,9 @@
 global:
   # 全局认证令牌
   auth_token: "AUTH_TOKEN_XXXXXX"
+  # 账号配置版本标识 - 手动填写任意随机字符串
+  # 每次更换账号Cookie后修改此值，调用方可通过对比该值判断是否需要重新注册
+  account_version: "v1"
 
 # 多账号列表 - 每个账号独立配置Cookie
 accounts:
@@ -34,3 +37,10 @@ proxy:
   password_template: "PROXY_PWD_XXXXXX"
   # 生成随机数的字符集（字母+数字）
   random_charset: abcdefghijklmnopqrstuvwxyz0123456789
+
+# 定时任务配置（可选）
+scheduler:
+  # 每日日报推送小时列表（24小时制），命中整点时推送，默认 9、15、20 点
+  report_hours: [ 9, 15, 20 ]
+  # 自动删除被ban设备的执行间隔（分钟），服务启动后首次立即执行，默认 120 分钟（2小时）
+  delete_banned_interval_minutes: 120
