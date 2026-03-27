@@ -16,7 +16,7 @@ from utils.proxy import get_proxy_dict
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://earnapp.com/dashboard/api"
-API_LINK_DEVICE = f"{API_BASE}/link_device?appid=earnapp"
+API_LINK_DEVICE = f"{API_BASE}/link_device"
 API_LIST_DEVICES = f"{API_BASE}/devices"
 API_MONEY = f"{API_BASE}/money"
 REQUEST_TIMEOUT = 15

@@ -119,9 +119,11 @@ def get_uuid_status(uuid):
         if uuid not in uuid_status:
             if is_uuid_in_queue(uuid):
                 return build_response(RESPONSE_CODES['SUCCESS'], "UUID status query successful",
-                                      {'status': 'pending', 'message': 'UUID is in processing queue'}), 200
+                                      {'status': 'pending', 'message': 'UUID is in processing queue',
+                                       'account_version': ACCOUNT_VERSION}), 200
             logger.warning(f"[{client_ip}] 查询不存在的UUID: {uuid}")
-            return build_response(RESPONSE_CODES['UUID_NOT_FOUND'], "UUID not found"), 404
+            return build_response(RESPONSE_CODES['UUID_NOT_FOUND'], "UUID not found",
+                                  {'status': 'not_found', 'account_version': ACCOUNT_VERSION}), 200
 
         status_info = {
             'status': uuid_status[uuid]['status'],
