@@ -1,7 +1,9 @@
 # 📖 Scripts
+
 Random scripts I wrote for fun, updated regularly. If you find them useful, please give a ⭐!
 
 ## Repository Overview
+
 - **ddns-scripts**
   Simple DDNS script, compatible with Cloudflare.
 - **earnapp-api**
@@ -20,5 +22,6 @@ Random scripts I wrote for fun, updated regularly. If you find them useful, plea
   Multi-platform wallpaper downloader supporting Wallhaven, 360 Wallpaper.
 
 ## Disclaimer
+
 - The scripts in this project are for **study and personal use only**. Commercial use is strictly prohibited.
 - Please comply with the laws of your country/region when using. Any illegal use is the sole responsibility of the user.
