@@ -6,10 +6,9 @@ import time
 from datetime import datetime
 from functools import wraps
 
-from flask import Blueprint, request, jsonify
-
 from config import AUTH_TOKEN, ACCOUNT_VERSION, ACCOUNTS, ALARM_ENABLED, PROXY_HOST, PROXY_PORT, RESPONSE_CODES
 from core.queue_processor import uuid_queue, queue_set, queue_lock, is_uuid_in_queue, add_uuid_to_queue
+from flask import Blueprint, request, jsonify
 from utils.persistence import uuid_status, status_lock, save_uuid_status
 
 logger = logging.getLogger(__name__)

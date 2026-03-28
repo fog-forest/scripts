@@ -10,8 +10,8 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "/data/config.yaml"  # 配置文件路径（容器内挂载）
 DATA_DIR = "/data"  # 数据目录
+CONFIG_FILE = os.path.join(DATA_DIR, "config.yaml")  # 配置文件路径（容器内挂载）
 STATUS_FILE = os.path.join(DATA_DIR, "uuid_status.json")  # UUID状态持久化文件
 
 # 接口调用

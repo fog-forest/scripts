@@ -5,7 +5,6 @@ import logging
 from datetime import datetime
 
 import requests
-
 from config import (
     ALARM_ENABLED, QMSG_TOKEN, QMSG_QQ, QMSG_BOT, QMSG_API,
     ACCOUNTS, API_CALL_INTERVAL, MAX_PROXY_RETRY_COUNT,

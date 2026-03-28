@@ -14,9 +14,8 @@ from typing import Dict, List, Optional
 
 import requests
 import yaml
+from config import CONFIG_FILE, STATUS_FILE
 
-CONFIG_FILE = "/data/config.yaml"
-STATUS_FILE = "/data/uuid_status.json"
 REQUEST_TIMEOUT = 15
 REQUEST_INTERVAL = 1  # 同账号设备间隔(秒)
 ACCOUNT_INTERVAL = 3  # 账号间隔(秒)

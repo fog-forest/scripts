@@ -43,8 +43,9 @@ def _build_account_report(account: Dict) -> str:
             lines.append(f"  收益查询: 失败 ({err})")
     else:
         d = money['data']
-        email = d.get('redeem_details', {}).get('email', '未知')
-        payment = d.get('redeem_details', {}).get('payment_method', '未知')
+        email = d.get('redeem_details', {}).get('email', '未知').replace('.', '·')
+        payment_raw = d.get('redeem_details', {}).get('payment_method', '')
+        payment = 'PayPal' if payment_raw == 'paypal.com' else '未知'
         lines.append(f"  提现账户: {email} ({payment})")
         lines.append(f"  当前余额: ${d.get('balance', 0):.3f}")
         lines.append(f"  累计收益: ${d.get('earnings_total', 0):.3f}")
