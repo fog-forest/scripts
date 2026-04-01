@@ -159,21 +159,27 @@ X-Auth-Token: {auth_token}
 
 ```json
 {
-  "uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"
+  "uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1",
+  "device": "minion_89f3a2_debian-host"
 }
 ```
 
+| 字段       | 类型     | 必填 | 说明                                             |
+|----------|--------|----|------------------------------------------------|
+| `uuid`   | string | ✅  | 设备 UUID                                        |
+| `device` | string | ✅  | 设备标识，可为空字符串但字段必须存在；UUID 已存在但 device 不一致时自动更新记录 |
+
 **响应说明**：
 
-| 场景    | HTTP | code | 说明                  |
-|-------|------|------|---------------------|
-| 成功入队  | 202  | 0    | UUID 已加入队列，等待处理     |
-| 已成功注册 | 200  | 0    | UUID 之前已注册成功，直接返回   |
-| 处理中   | 202  | 0    | UUID 正在处理或排队等待中     |
-| 已被封禁  | 200  | 0    | UUID 对应设备已封禁，拒绝重新注册 |
-| 已在队列  | 200  | 1004 | UUID 已在队列中，勿重复提交    |
-| 参数缺失  | 400  | 1001 | 请求体缺少 uuid 字段       |
-| 鉴权失败  | 401  | 1002 | Token 错误或未提供        |
+| 场景    | HTTP | code | 说明                     |
+|-------|------|------|------------------------|
+| 成功入队  | 202  | 0    | UUID 已加入队列，等待处理        |
+| 已成功注册 | 200  | 0    | UUID 之前已注册成功，直接返回      |
+| 处理中   | 202  | 0    | UUID 正在处理或排队等待中        |
+| 已被封禁  | 200  | 0    | UUID 对应设备已封禁，拒绝重新注册    |
+| 已在队列  | 200  | 1004 | UUID 已在队列中，勿重复提交       |
+| 参数缺失  | 400  | 1001 | 请求体缺少 uuid 或 device 字段 |
+| 鉴权失败  | 401  | 1002 | Token 错误或未提供           |
 
 **入队成功响应**：
 
@@ -218,6 +224,7 @@ X-Auth-Token: {auth_token}
   "data": {
     "status": "success",
     "message": "UUID registered successfully",
+    "device": "minion_89f3a2_debian-host",
     "account_version": "v1"
   }
 }
@@ -232,6 +239,7 @@ X-Auth-Token: {auth_token}
   "data": {
     "status": "banned",
     "message": "Device banned: abuse",
+    "device": "minion_89f3a2_debian-host",
     "account_version": "v1"
   }
 }
@@ -298,13 +306,13 @@ X-Auth-Token: {auth_token}
 curl -X POST http://127.0.0.1:5000/api/register \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_auth_token" \
-  -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"}'
+  -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1", "device": "minion_89f3a2_debian-host"}'
 
 # X-Auth-Token 方式
 curl -X POST http://127.0.0.1:5000/api/register \
   -H "Content-Type: application/json" \
   -H "X-Auth-Token: your_auth_token" \
-  -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1"}'
+  -d '{"uuid": "sdk-node-7a3b43f516a3490d8ba4c3d459bb34b1", "device": "minion_89f3a2_debian-host"}'
 ```
 
 ### 查询 UUID 状态

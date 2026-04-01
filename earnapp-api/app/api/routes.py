@@ -6,9 +6,10 @@ import time
 from datetime import datetime
 from functools import wraps
 
+from flask import Blueprint, request, jsonify
+
 from config import AUTH_TOKEN, ACCOUNT_VERSION, ACCOUNTS, ALARM_ENABLED, PROXY_HOST, PROXY_PORT, RESPONSE_CODES
 from core.queue_processor import uuid_queue, queue_set, queue_lock, is_uuid_in_queue, add_uuid_to_queue
-from flask import Blueprint, request, jsonify
 from utils.persistence import uuid_status, status_lock, save_uuid_status
 
 logger = logging.getLogger(__name__)
@@ -62,12 +63,21 @@ def register_uuid():
     if not request.is_json:
         return build_response(RESPONSE_CODES['INVALID_PARAM'], "Request must be JSON"), 400
 
-    uuid = request.get_json().get('uuid')
+    body = request.get_json()
+    uuid = body.get('uuid')
     if not uuid:
         return build_response(RESPONSE_CODES['INVALID_PARAM'], "Missing required field: uuid"), 400
+    if 'device' not in body:
+        return build_response(RESPONSE_CODES['INVALID_PARAM'], "Missing required field: device"), 400
+    device = body.get('device') or ''
 
     if is_uuid_in_queue(uuid):
         logger.info(f"[{client_ip}] UUID {uuid} 已在队列中")
+        # 即使在队列中，也同步更新 device
+        with status_lock:
+            if uuid in uuid_status and uuid_status[uuid].get('device') != device:
+                uuid_status[uuid]['device'] = device
+                save_uuid_status()
         return build_response(
             RESPONSE_CODES['DUPLICATE_UUID'],
             "UUID is already in processing queue",
@@ -76,11 +86,15 @@ def register_uuid():
 
     with status_lock:
         if uuid in uuid_status:
+            # 同步更新 device（如有变化）
+            if uuid_status[uuid].get('device') != device:
+                uuid_status[uuid]['device'] = device
+                save_uuid_status()
             status = uuid_status[uuid]['status']
             # 已注册成功直接返回，无需重新入队
             if status == 'success':
                 return build_response(RESPONSE_CODES['SUCCESS'], "UUID already registered",
-                                      {'uuid': uuid, 'status': 'success'}), 200
+                                      {'uuid': uuid, 'status': 'success', 'device': device}), 200
             # 设备已被封禁，直接返回 banned 状态，不允许重新入队
             if status == 'banned':
                 msg = uuid_status[uuid].get('message', 'Device has been banned')
@@ -96,7 +110,8 @@ def register_uuid():
         uuid_status[uuid] = {
             'status': 'pending',
             'create_time': time.time(),
-            'message': "UUID received, waiting for processing"
+            'message': "UUID received, waiting for processing",
+            'device': device
         }
 
     queue_size = add_uuid_to_queue(uuid)
@@ -127,6 +142,7 @@ def get_uuid_status(uuid):
         status_info = {
             'status': uuid_status[uuid]['status'],
             'message': uuid_status[uuid].get('message', ''),
+            'device': uuid_status[uuid].get('device', ''),
             'account_version': ACCOUNT_VERSION
         }
         is_banned = uuid_status[uuid]['status'] == 'banned'

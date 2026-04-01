@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 
 import requests
 import yaml
+
 from config import CONFIG_FILE, STATUS_FILE
 
 REQUEST_TIMEOUT = 15
