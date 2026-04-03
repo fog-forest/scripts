@@ -2,8 +2,7 @@
 # coding=utf8
 """
 EarnApp设备批量删除
-- 支持 --all / --banned 参数静默运行
-- 也可作为模块被scheduler调用
+- 支持 --all / --banned 参数静默运行，也可作为模块被scheduler调用
 - 被ban设备删除时同步更新 uuid_status.json
 """
 import json
@@ -41,9 +40,15 @@ def load_uuid_status() -> Dict:
 
 def save_uuid_status(uuid_status: Dict) -> None:
     try:
+        # 读取现有文件内容并合并，避免覆盖其他进程写入的数据
+        existing = {}
+        if os.path.exists(STATUS_FILE):
+            with open(STATUS_FILE, 'r', encoding='utf8') as f:
+                existing = json.load(f).get('uuid_status', {})
+        existing.update(uuid_status)
         temp = f"{STATUS_FILE}.tmp"
         with open(temp, 'w', encoding='utf8') as f:
-            json.dump({'uuid_status': uuid_status}, f, ensure_ascii=False, indent=2)
+            json.dump({'uuid_status': existing}, f, ensure_ascii=False, indent=2)
         os.replace(temp, STATUS_FILE)
     except Exception as e:
         print(f"[WARNING] 保存UUID状态失败: {e}")
@@ -52,7 +57,7 @@ def save_uuid_status(uuid_status: Dict) -> None:
 def mark_uuid_banned(uuid: str, ban_reason: str, uuid_status: Dict) -> None:
     msg = f"Device banned: {ban_reason}"
     if uuid not in uuid_status:
-        uuid_status[uuid] = {}
+        return
     uuid_status[uuid]['status'] = 'banned'
     uuid_status[uuid]['message'] = msg
     print(f"  [STATUS] {uuid} 已标记为 banned | {msg}")

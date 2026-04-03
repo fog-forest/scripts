@@ -1,6 +1,9 @@
 FROM python:3.12-alpine
 LABEL authors="Kinoko"
 
+# Python库路径
+ENV PYTHONPATH=/app
+
 COPY ./app /app
 WORKDIR /app
 

@@ -75,7 +75,6 @@ def process_uuids() -> None:
                 with status_lock:
                     if "error" in response:
                         err = response['error']
-                        # EarnApp 对已绑定设备返回 already linked/registered，视为成功
                         if "already linked" in err or "already registered" in err:
                             logger.info(f"UUID {uuid} | 账号 {used_account} | 已注册 | 耗时: {process_time}s")
                             uuid_status[uuid]['status'] = 'success'

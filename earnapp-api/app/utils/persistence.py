@@ -29,15 +29,14 @@ def ensure_data_dir_exists() -> None:
 
 def load_uuid_status() -> None:
     """从文件加载UUID状态"""
-    global uuid_status
     try:
         if os.path.exists(STATUS_FILE):
             with open(STATUS_FILE, 'r', encoding='utf8') as f:
-                uuid_status = json.load(f).get('uuid_status', {})
+                data = json.load(f).get('uuid_status', {})
+            uuid_status.update(data)
             logger.info(f"加载UUID状态成功，共{len(uuid_status)}条记录")
         else:
             logger.info("UUID状态文件不存在，初始化空状态")
-            uuid_status = {}
     except Exception as e:
         logger.error(f"加载UUID状态失败: {e}")
 
@@ -46,13 +45,12 @@ def save_uuid_status() -> None:
     """原子写入UUID状态：先写临时文件再 replace，避免写入中途崩溃导致文件损坏"""
     try:
         with status_lock:
-            # 在锁内深拷贝，防止锁释放后其他线程并发修改字典导致写入内容不一致
             data = {'uuid_status': copy.deepcopy(uuid_status)}
         temp = f"{STATUS_FILE}.tmp"
         with open(temp, 'w', encoding='utf8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(temp, STATUS_FILE)
-        logger.debug("UUID状态保存成功")
+        logger.info(f"UUID状态保存成功 | 记录数: {len(uuid_status)} | 文件: {STATUS_FILE}")
     except Exception as e:
         logger.error(f"保存UUID状态失败: {e}")
 
